@@ -39,8 +39,8 @@ cargo build --release
 ## 全問のベンチマーク
 
 ```
-python3 scripts/bench.py                                 # 全セット（評価・初見 60 秒/問, 挑戦 300 秒/問）＋全テスト
-python3 scripts/bench.py --sets seen,unseen --timeout 5  # 評価セットだけを短い制限で
+python3 scripts/bench.py                                 # 全セット（評価・初見 120 秒/問, 挑戦 600 秒/問）＋全テスト
+python3 scripts/bench.py --sets seen,unseen --timeout 20 # 評価セットだけを改善ループ用の制限で
 python3 scripts/bench.py --ids FE-0001,FE-0004 --no-tests
 ```
 

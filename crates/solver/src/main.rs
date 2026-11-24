@@ -5,7 +5,7 @@
 
 use fe_solver::parse::parse_general;
 use fe_solver::problems::{load_problems, Set};
-use fe_solver::solve::{report, solve};
+use fe_solver::solve::{default_schedule, report, solve_with};
 use std::time::Duration;
 
 fn json_str(s: &str) -> String {
@@ -46,6 +46,7 @@ fn real_main() -> i32 {
             let mut as_json = false;
             let mut proof = false;
             let mut dump = false;
+            let mut schedule = default_schedule();
             let mut i = 3;
             while i < args.len() {
                 match args[i].as_str() {
@@ -56,6 +57,21 @@ fn real_main() -> i32 {
                     "--json" => as_json = true,
                     "--proof" => proof = true,
                     "--dump" => dump = true,
+                    "--width" => {
+                        schedule = vec![(args[i + 1].parse().expect("幅"), 1.0)];
+                        i += 1;
+                    }
+                    "--schedule" => {
+                        // 例: 0.5:0.25,1:0.35,2:1
+                        schedule = args[i + 1]
+                            .split(',')
+                            .map(|t| {
+                                let (w, f) = t.split_once(':').expect("幅:割合");
+                                (w.parse().expect("幅"), f.parse().expect("割合"))
+                            })
+                            .collect();
+                        i += 1;
+                    }
                     other => panic!("不明な引数 {}", other),
                 }
                 i += 1;
@@ -68,7 +84,7 @@ fn real_main() -> i32 {
                 let (l, r) = parse_general(target).expect("方程式の解析");
                 ("custom".to_string(), target.clone(), l, r)
             };
-            let out = solve(lhs, rhs, Duration::from_secs_f64(timeout)).expect("solve");
+            let out = solve_with(lhs, rhs, Duration::from_secs_f64(timeout), &schedule).expect("solve");
             if dump {
                 for i in 0..out.kernel.num_facts() {
                     let f = out.kernel.fact_at(i).unwrap();

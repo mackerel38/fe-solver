@@ -20,7 +20,47 @@ pub struct SolveOutput {
     pub root_facts: Vec<Fact>,
 }
 
+/// 探索の予定: (幅, 時間の割合) の列。各試行は新しい検証核で独立に行い、完全解決した時点で終える。
+pub fn default_schedule() -> Vec<(f64, f64)> {
+    match std::env::var("FE_SCHEDULE") {
+        Ok(s) => s
+            .split(',')
+            .filter_map(|t| {
+                let (w, f) = t.split_once(':')?;
+                Some((w.parse().ok()?, f.parse().ok()?))
+            })
+            .collect(),
+        Err(_) => vec![(1.0, 1.0)],
+    }
+}
+
 pub fn solve(lhs: Poly, rhs: Poly, timeout: Duration) -> Result<SolveOutput, String> {
+    solve_with(lhs, rhs, timeout, &default_schedule())
+}
+
+/// 予定に従って幅を変えながら解く（反復拡幅）。最後の試行は残り時間をすべて使う。
+pub fn solve_with(lhs: Poly, rhs: Poly, timeout: Duration, schedule: &[(f64, f64)]) -> Result<SolveOutput, String> {
+    let start = Instant::now();
+    let sched: Vec<(f64, f64)> = if schedule.is_empty() { vec![(1.0, 1.0)] } else { schedule.to_vec() };
+    let mut last: Option<SolveOutput> = None;
+    for (i, (w, frac)) in sched.iter().enumerate() {
+        let remain = (start + timeout).saturating_duration_since(Instant::now());
+        if remain.is_zero() && last.is_some() {
+            break;
+        }
+        let t = if i + 1 == sched.len() { remain } else { timeout.mul_f64(*frac).min(remain) };
+        let mut out = solve_once(lhs.clone(), rhs.clone(), t, *w)?;
+        out.elapsed = start.elapsed();
+        out.stats.push(("width_tried".into(), (*w * 100.0) as u64));
+        if out.status == "complete" {
+            return Ok(out);
+        }
+        last = Some(out);
+    }
+    Ok(last.unwrap())
+}
+
+fn solve_once(lhs: Poly, rhs: Poly, timeout: Duration, width: f64) -> Result<SolveOutput, String> {
     let start = Instant::now();
     let k = Kernel::new(lhs, rhs)?;
     let mut engine = Engine::new(k, start + timeout);
@@ -30,6 +70,7 @@ pub fn solve(lhs: Poly, rhs: Poly, timeout: Duration) -> Result<SolveOutput, Str
         engine.size_cap = (2 * sz).max(60);
     }
     let mut s = Searcher::new(engine);
+    s.width = width;
     let mut error = None;
     if let Err(m) = s.solve_root() {
         error = Some(m);

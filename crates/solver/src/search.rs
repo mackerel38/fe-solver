@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 pub struct Searcher {
     pub e: Engine,
+    /// 探索幅（1.0 が標準）。代入数・生成元の数などをこの倍率で増減する
+    pub width: f64,
     pub round_budget: usize,
     pub retry: Vec<(BState, u32)>,
     pub open: Vec<(BranchId, String)>,
@@ -107,11 +109,16 @@ pub enum Fin {
 
 impl Searcher {
     pub fn new(e: Engine) -> Searcher {
-        Searcher { e, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new() }
+        Searcher { e, width: 1.0, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new() }
     }
 
     fn add_time(&mut self, k: &str, t0: Instant) {
         *self.stats.entry(k.to_string()).or_insert(0) += t0.elapsed().as_millis() as u64;
+    }
+
+    /// 幅で拡大縮小した個数（1 以上）
+    fn scaled(&self, n: usize) -> usize {
+        ((n as f64) * self.width).round().max(1.0) as usize
     }
 
     fn bump(&mut self, k: &str) {
@@ -496,11 +503,11 @@ impl Searcher {
     }
 
     fn instances(&mut self, st: &mut BState, round: usize) -> Res<()> {
-        self.round_budget = 80 + 40 * round;
+        self.round_budget = self.scaled(80 + 40 * round);
         // 生成元: 2 変数の単位等式（小さい順）
         let mut gens: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
         gens.sort_by_key(|f| poly_size(&self.e.poly0(*f)));
-        gens.truncate(if round == 0 { 2 } else { 4 + round });
+        gens.truncate(self.scaled(if round == 0 { 2 } else { 4 + round }));
         let t1: Vec<Poly> = vec![Poly::zero(), Poly::one(), Poly::int(-1), x(), x().neg()];
         let fx = Poly::f(x());
         let t2: Vec<Poly> = vec![fx.clone(), fx.neg(), Poly::f(Poly::zero()), x().scale(&fe_kernel::poly::q(2)), Poly::int(2)];
@@ -599,7 +606,7 @@ impl Searcher {
         if round >= 1 {
             let mut ones: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
             ones.sort_by_key(|f| poly_size(&self.e.poly0(*f)));
-            ones.truncate(12);
+            ones.truncate(self.scaled(12));
             let mut pool = vec![x().neg(), Poly::zero(), Poly::one()];
             if round >= 2 {
                 pool.push(Poly::f(x()));
@@ -1085,11 +1092,11 @@ impl Searcher {
             });
         }
         points.sort_by_key(|k| poly_size(k));
-        points.truncate(16);
+        points.truncate(self.scaled(16));
         let mut made = 0;
         for (cf, _) in pcs {
             for k in &points {
-                if made >= 10 || self.closed(st) {
+                if made >= self.scaled(10) || self.closed(st) {
                     return Ok(());
                 }
                 let key = format!("pwi|{:?}|{:x}", cf, hash_poly(k));
