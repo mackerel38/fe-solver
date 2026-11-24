@@ -1,0 +1,4 @@
+target/
+__pycache__/
+bench/runs/*/tmp/
+*.swp

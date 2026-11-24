@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["crates/kernel", "crates/render", "crates/solver"]
+
+[profile.release]
+opt-level = 3
+debug = 1
+
+[profile.test]
+opt-level = 2

@@ -1,0 +1,21 @@
+{
+ "fetched_at_utc": "2026-11-24T19:22:21+00:00",
+ "site": "https://gghx0.github.io/fe-project/",
+ "about": "https://gghx0.github.io/fe-project/about",
+ "repository": "https://github.com/gghx0/fe-project.git",
+ "repository_commit": "76bfad309f34fed8dddea7f3e9493ae5d133c080",
+ "repository_commit_date": "2026-10-02T01:50:17-04:00",
+ "files": {
+  "data/raw/fe_database.json": "3872288efa73052e5a9f4d0155b5450a9a4bf934ad2df4d1ff22a91f94f53e3c",
+  "data/raw/fe_references.json": "951ff361ee3b02a3d09b560943902a9a703a39ffc3a7b2ad5269d6fa78954291",
+  "data/problems.json": "c7b156aaecd30287e26c4541fc45dbd1f9f59f29d67d4817d4d52316e0d8e682"
+ },
+ "status_source": "solutions/FE-XXXX.md の frontmatter `status`（無ければ open）。デプロイ済みサイトの data-status と照合済み",
+ "status_site_mismatches": 0,
+ "counts": {
+  "problems": 847,
+  "literal_equations": 1625,
+  "solved": 552,
+  "open": 295
+ }
+}
