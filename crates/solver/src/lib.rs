@@ -7,6 +7,7 @@ pub mod matching;
 pub mod order;
 pub mod parse;
 pub mod polyutil;
+pub mod pos;
 pub mod problems;
 pub mod search;
 pub mod solve;

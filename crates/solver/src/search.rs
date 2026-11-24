@@ -205,6 +205,11 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            let r = self.square_ranges(st);
+            r?;
+            if self.closed(st) {
+                return Ok(());
+            }
             let t0 = Instant::now();
             let r = self.eliminate2(st);
             self.add_time("t_elim2", t0);
@@ -544,6 +549,41 @@ impl Searcher {
                 }
             }
         }
+        // 正定値化: f の引数が c·Y² + a·X + b（c > 0, a ≠ 0）なら Y := X − a/(2c) で c·X² + (b + a²/(4c)) にする
+        for u in &atoms {
+            for (sq, li) in [(1u32, 0u32), (0, 1)] {
+                let ys = coeffs_in(u, &Atom::Var(sq));
+                if ys.keys().max() != Some(&2) || ys.contains_key(&1) {
+                    continue;
+                }
+                let c = match ys.get(&2).and_then(|c| c.as_const()) {
+                    Some(c) if c > Q::zero() => c,
+                    _ => continue,
+                };
+                let rest = ys.get(&0).cloned().unwrap_or_else(Poly::zero);
+                let xs = coeffs_in(&rest, &Atom::Var(li));
+                if xs.keys().max() != Some(&1) {
+                    continue;
+                }
+                let a = match xs.get(&1).and_then(|c| c.as_const()) {
+                    Some(a) => a,
+                    None => continue,
+                };
+                let b0 = xs.get(&0).cloned().unwrap_or_else(Poly::zero);
+                let bq = match b0.as_const() {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let four = Q::from_integer(4.into());
+                if bq.clone() + &a * &a / (&four * &c) <= Q::zero() {
+                    continue;
+                }
+                let k = -(&a / (Q::from_integer(2.into()) * &c));
+                let mut s = vec![x(), y()];
+                s[sq as usize] = Poly::var(li).add(&Poly::constant(k));
+                push(s);
+            }
+        }
         // 係数が閉じた可逆な式（f(j) など）の場合: v := (v − w)·inv(c)
         for u in &atoms {
             for v in 0..2u32 {
@@ -662,6 +702,37 @@ impl Searcher {
             }
             if self.closed(st) {
                 return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// ある変数が 2 乗の形でだけ現れる単位等式から、平方の値域（t ≥ 0）での事実を作る
+    fn square_ranges(&mut self, st: &mut BState) -> Res<()> {
+        let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) >= 1).collect();
+        for u in units {
+            let key = format!("sqr|{:?}", u);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let p = self.e.poly0(u);
+            let nv = self.e.nvars(u);
+            for v in 0..nv {
+                let pre = match crate::pos::unsquare(&p, v) {
+                    Some(q) => q,
+                    None => continue,
+                };
+                let pc = match fe_kernel::Clause::new(nv, vec![Lit::eq(pre)]) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                if let Ok(r) = self.e.k.square_range(st.b, u, v, pc) {
+                    self.bump("square_range");
+                    self.e.add_fact(st, r)?;
+                    if self.closed(st) {
+                        return Ok(());
+                    }
+                }
             }
         }
         Ok(())

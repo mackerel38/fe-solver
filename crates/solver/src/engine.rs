@@ -22,6 +22,16 @@ pub struct RwRule {
     pub rhs: Poly,
 }
 
+/// 条件付きの書き換え規則: 節「条件リテラル ∨ lhs − rhs = 0」で、条件リテラルの否定が示せる場所でだけ使う
+#[derive(Clone, Debug)]
+pub struct CondRule {
+    pub fact: Fact,
+    pub nvars: u32,
+    pub eq_idx: usize,
+    pub lhs: Atom,
+    pub rhs: Poly,
+}
+
 /// 枝ごとの知識
 #[derive(Clone)]
 pub struct BState {
@@ -35,6 +45,7 @@ pub struct BState {
     pub invs: Vec<(Poly, Poly)>,
     /// 単射性の仮定「∀x,y. f(x) − f(y) ≠ 0 ∨ x − y = 0」
     pub inj: Option<Fact>,
+    pub cond_rules: Vec<CondRule>,
     /// 単位等式（正規化・簡約済み）
     pub units: Vec<Fact>,
     /// その他の節（選言・不等式など）
@@ -54,6 +65,7 @@ impl BState {
             nes: vec![],
             invs: vec![],
             inj: None,
+            cond_rules: vec![],
             units: vec![],
             others: vec![],
             keys: HashSet::new(),
@@ -180,10 +192,16 @@ impl Engine {
                 }
             }
         }
+        let mut inst_rhs: Option<(Fact, Poly)> = None;
         if let Some((ri, s, rhs)) = applied {
             self.rewrite_budget -= 1;
             let rf = st.rules[ri].fact;
             let inst = if st.rules[ri].nvars == 0 { rf } else { self.k.instantiate(b, rf, s, n)? };
+            inst_rhs = Some((inst, rhs));
+        } else if !st.cond_rules.is_empty() && self.rewrite_budget > 0 {
+            inst_rhs = self.apply_cond_rules(st, &cur_atom, n)?;
+        }
+        if let Some((inst, rhs)) = inst_rhs {
             let lam = coeff_of_atom(&self.poly0(inst), &cur_atom).ok_or("例化の結果に原子がない")?;
             items.push((Poly::constant(Q::one() / lam), inst, 0));
             let (r2, its2) = self.rw_poly(st, &rhs, n)?;
@@ -212,6 +230,136 @@ impl Engine {
             return Err(format!("書き換えの結果が想定と違う: {} vs {}", p, want));
         }
         Ok(Some((cur, f)))
+    }
+
+    /// 条件付き規則を原子 a に適用する。条件の否定を平方和で示せたときだけ、単位等式「a − rhs = 0」を作る。
+    fn apply_cond_rules(&mut self, st: &mut BState, a: &Atom, n: u32) -> Res<Option<(Fact, Poly)>> {
+        for cr in st.cond_rules.clone() {
+            let s = match match_atom(&cr.lhs, cr.nvars, a) {
+                Some(s) => s,
+                None => continue,
+            };
+            let rhs = cr.rhs.subst_vars(&s);
+            if !all_atoms_less(&rhs, a) {
+                continue;
+            }
+            let c = self.clause(cr.fact).clone();
+            // 条件がすべて否定できるか（先に確認してから事実を作る）
+            let mut ok = true;
+            for (i, l) in c.lits().iter().enumerate() {
+                if i == cr.eq_idx {
+                    continue;
+                }
+                let li = l.subst_vars(&s);
+                if li.truth() == Some(false) {
+                    continue;
+                }
+                let target = li.poly().neg();
+                let need_strict = li.rel() == Rel::Ge;
+                match crate::pos::sos(&target) {
+                    Some((_, k)) if !need_strict || k > Q::zero() => {}
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            self.rewrite_budget = self.rewrite_budget.saturating_sub(1);
+            let inst = self.k.instantiate(st.b, cr.fact, s, n)?;
+            let inst = self.discharge(st, inst)?;
+            let ic = self.clause(inst);
+            if ic.lits().len() == 1 && ic.lits()[0].rel() == Rel::Eq {
+                return Ok(Some((inst, rhs)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// 選言中の不等式リテラルのうち、否定が平方和で示せる（＝偽の）ものを取り除く
+    pub fn discharge(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
+        let mut cur = f;
+        for _ in 0..8 {
+            let c = self.clause(cur).clone();
+            let mut hit = None;
+            for (i, l) in c.lits().iter().enumerate() {
+                if !(l.rel() == Rel::Gt || l.rel() == Rel::Ge) {
+                    continue;
+                }
+                let target = l.poly().neg();
+                let strict = l.rel() == Rel::Ge;
+                if let Some((sq, k)) = crate::pos::sos(&target) {
+                    if strict && k <= Q::zero() {
+                        continue;
+                    }
+                    hit = Some((i, sq, k, strict));
+                    break;
+                }
+            }
+            let (i, sq, k, strict) = match hit {
+                Some(h) => h,
+                None => return Ok(cur),
+            };
+            let pf = self.k.pos_comb(st.b, c.nvars(), vec![], vec![], sq, k, strict)?;
+            cur = self.k.resolve(st.b, cur, i, pf, 0)?;
+        }
+        Ok(cur)
+    }
+
+    /// 節が条件付き規則になるなら作る: f を含む等式リテラル 1 つと、f を含まない不等式リテラルだけからなる
+    pub fn extract_cond_rule(&self, f: Fact) -> Option<CondRule> {
+        let c = self.clause(f);
+        if c.lits().len() < 2 || c.nvars() > 2 {
+            return None;
+        }
+        let mut eq_idx = None;
+        for (i, l) in c.lits().iter().enumerate() {
+            if l.rel() == Rel::Eq && l.poly().has_f() {
+                if eq_idx.is_some() {
+                    return None;
+                }
+                eq_idx = Some(i);
+            } else if !(matches!(l.rel(), Rel::Gt | Rel::Ge) && !l.poly().has_f()) {
+                return None;
+            }
+        }
+        let eq_idx = eq_idx?;
+        let p = c.lits()[eq_idx].poly();
+        let mut best: Option<(Atom, Q)> = None;
+        for (m, coef) in p.terms() {
+            if m.factors().len() != 1 || m.factors()[0].1 != 1 {
+                continue;
+            }
+            let a = &m.factors()[0].0;
+            if !matches!(a, Atom::F(_)) {
+                continue;
+            }
+            let elsewhere = p.terms().iter().any(|(m2, _)| m2 != m && m2.factors().iter().any(|(b, _)| b == a));
+            if elsewhere {
+                continue;
+            }
+            let rest = p.sub(&Poly::mono(m.clone(), coef.clone()));
+            if !all_atoms_less(&rest, a) {
+                continue;
+            }
+            let av = Poly::from_atom(a.clone()).vars();
+            if !rest.vars().is_subset(&av) {
+                continue;
+            }
+            let cond_vars_ok = c.lits().iter().all(|l| l.poly().vars().is_subset(&av));
+            if !cond_vars_ok {
+                continue;
+            }
+            if best.as_ref().map_or(true, |(b, _)| atom_cmp(a, b) == Ordering::Greater) {
+                best = Some((a.clone(), coef.clone()));
+            }
+        }
+        let (a, coef) = best?;
+        let rest = p.sub(&Poly::from_atom(a.clone()).scale(&coef));
+        let rhs = rest.scale(&(-Q::one() / coef));
+        Some(CondRule { fact: f, nvars: c.nvars(), eq_idx, lhs: a, rhs })
     }
 
     /// 多項式 p を正規化する。戻り値 (p', items) は p − p' = Σ coef · (保存形) を満たす。
@@ -369,6 +517,7 @@ impl Engine {
         let f = self.rewrite_clause(st, f)?;
         let f = self.canon_vars(st, f)?;
         let f = self.resolve_nes(st, f)?;
+        let f = self.discharge(st, f)?;
         let c = self.clause(f).clone();
         if c.is_false() {
             return Ok(Added::Contradiction(f));
@@ -409,6 +558,10 @@ impl Engine {
             if c.nvars() == 0 && c.lits().len() == 1 && c.lits()[0].rel() == Rel::Ne {
                 st.nes.push(f);
                 self.make_inverse(st, f)?;
+            }
+            if let Some(cr) = self.extract_cond_rule(f) {
+                st.cond_rules.push(cr);
+                st.cache.clear();
             }
             st.others.push(f);
         }
