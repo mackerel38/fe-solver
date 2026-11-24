@@ -316,3 +316,25 @@ pub fn poly_sqrt(p: &Poly) -> Option<Poly> {
     }
     None
 }
+
+/// p を u で割り切れるなら商（u の主項による多項式の割り算。主項は辞書式順序）
+pub fn exact_div(p: &Poly, u: &Poly) -> Option<Poly> {
+    if u.is_zero() {
+        return None;
+    }
+    let lead = |q: &Poly| q.terms().iter().max_by(|a, b| lex_cmp(&a.0, &b.0)).cloned();
+    let (um, uc) = lead(u)?;
+    let mut rem = p.clone();
+    let mut quo = Poly::zero();
+    for _ in 0..200 {
+        if rem.is_zero() {
+            return Some(quo);
+        }
+        let (rm, rc) = lead(&rem)?;
+        let qm = rm.div(&um)?;
+        let t = Poly::mono(qm, &rc / &uc);
+        quo = quo.add(&t);
+        rem = rem.sub(&t.mul(u));
+    }
+    None
+}

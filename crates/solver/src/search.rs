@@ -177,6 +177,15 @@ impl Searcher {
             if round == 1 && depth < self.max_depth && self.zero_split(st, depth)? {
                 return Ok(());
             }
+            if round == 2 && depth <= 2 && std::env::var("FE_NO_INJ").is_err() && self.try_injectivity(st, depth)? {
+                return Ok(());
+            }
+            if st.inj.is_some() {
+                self.apply_injectivity(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+            }
             let before = st.units.len() + st.others.len();
             let t0 = Instant::now();
             let r = self.instances(st, round);
@@ -245,6 +254,102 @@ impl Searcher {
         let children = vec![(c0, h0), (c1, hs[0])];
         self.run_children(st, children, depth)?;
         Ok(true)
+    }
+
+    /// 単射性の補題を試す: 排中律で「∀x,y. f(x) = f(y) ⇒ x = y」とその否定（ある a ≠ b で f(a) = f(b)）に分け、
+    /// 否定側を時間予算内に矛盾で閉じられれば肯定側で続ける。閉じられなければ場合分けを取り消す。
+    fn try_injectivity(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        if st.tried.contains("inj") || st.inj.is_some() {
+            return Ok(false);
+        }
+        st.tried.insert("inj".into());
+        let fx = Poly::f(x());
+        let fy = Poly::f(y());
+        let c = fe_kernel::Clause::new(2, vec![Lit::ne(fx.sub(&fy)), Lit::eq(x().sub(&y()))]).map_err(|e| e.to_string())?;
+        let (c0, h0, c1, hs, _consts) = self.e.k.split_em(st.b, c)?;
+        self.bump("inj_try");
+        let saved = self.e.deadline;
+        let now = Instant::now();
+        let remain = saved.saturating_duration_since(now);
+        self.e.deadline = now + (remain / 4).min(Duration::from_secs(4));
+        let open_before = self.open.len();
+        let mut cst = st.child(c1);
+        cst.tried.insert("inj".into());
+        let r = (|| -> Res<()> {
+            for h in &hs {
+                self.e.add_fact(&mut cst, *h)?;
+            }
+            Ok(())
+        })();
+        match r {
+            Ok(()) => self.solve_branch(cst, depth + 1)?,
+            Err(m) if m == TIMEOUT => {}
+            Err(m) => {
+                self.e.deadline = saved;
+                return Err(m);
+            }
+        }
+        self.e.deadline = saved;
+        self.open.truncate(open_before);
+        if !self.e.k.is_closed(c1) {
+            self.e.k.abandon_split(st.b)?;
+            return Ok(false);
+        }
+        self.bump("inj_proved");
+        let mut c0st = st.child(c0);
+        c0st.inj = Some(h0);
+        c0st.tried.insert("inj".into());
+        let r = self.e.add_fact(&mut c0st, h0);
+        match r {
+            Ok(_) => self.solve_branch(c0st, depth + 1)?,
+            Err(m) if m == TIMEOUT => self.open.push((c0, TIMEOUT.into())),
+            Err(m) => return Err(m),
+        }
+        Ok(true)
+    }
+
+    /// 単射性から: 単位等式 c(f(s) − f(t)) = 0 があれば s − t = 0
+    fn apply_injectivity(&mut self, st: &mut BState) -> Res<()> {
+        let inj = match st.inj {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+        let units = st.units.clone();
+        for u in units {
+            let p = self.e.poly0(u);
+            if p.terms().len() != 2 {
+                continue;
+            }
+            let (m1, c1) = &p.terms()[0];
+            let (m2, c2) = &p.terms()[1];
+            if *c1 != -c2.clone() || m1.factors().len() != 1 || m2.factors().len() != 1 || m1.factors()[0].1 != 1 || m2.factors()[0].1 != 1 {
+                continue;
+            }
+            let (a1, a2) = (&m1.factors()[0].0, &m2.factors()[0].0);
+            let (s1, s2) = match (a1, a2) {
+                (Atom::F(s1), Atom::F(s2)) => ((**s1).clone(), (**s2).clone()),
+                _ => continue,
+            };
+            let key = format!("inj|{:?}", u);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let nv = self.e.nvars(u);
+            let inst = self.e.k.instantiate(st.b, inj, vec![s1.clone(), s2.clone()], nv)?;
+            let ic = self.e.clause(inst).clone();
+            let want = Lit::ne(Poly::f(s1).sub(&Poly::f(s2)));
+            let li = match ic.lits().iter().position(|l| *l == want) {
+                Some(i) => i,
+                None => continue,
+            };
+            let r = self.e.k.resolve(st.b, inst, li, u, 0)?;
+            self.bump("inj_apply");
+            self.e.add_fact(st, r)?;
+            if self.closed(st) {
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     /// 代入候補にする特別な点: 枝の定数（スコーレム定数）と、f の値が定数とわかっている閉じた点
@@ -686,6 +791,12 @@ impl Searcher {
             if crate::search::n_components(self.e.clause(zp)) < 2 {
                 continue;
             }
+            // f を含まない成分（∀y. y = 0 など）は、その変数に値を代入すれば偽になるので消す
+            let zp = self.drop_ffree_components(st, zp)?;
+            if crate::search::n_components(self.e.clause(zp)) < 2 {
+                self.e.add_fact(st, zp)?;
+                continue;
+            }
             self.bump("split_disjoint");
             let children = self.e.k.split_components(st.b, zp)?;
             self.run_children(st, children, depth)?;
@@ -694,26 +805,71 @@ impl Searcher {
         Ok(false)
     }
 
+    /// 変数を含み f を含まない成分のリテラルを、変数への値の代入で偽にして取り除く
+    fn drop_ffree_components(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
+        let c = self.e.clause(f).clone();
+        let n = c.nvars();
+        let mut s: Vec<Poly> = (0..n).map(Poly::var).collect();
+        let mut changed = false;
+        for comp in fe_kernel::kernel::components(&c) {
+            let vars: BTreeSet<u32> = comp.iter().flat_map(|l| l.poly().vars()).collect();
+            if vars.is_empty() || comp.iter().any(|l| l.poly().has_f() || l.rel() != Rel::Eq) {
+                continue;
+            }
+            // すべての変数に同じ値 v を入れて、成分のどのリテラルも 0 でない定数になる v を探す
+            'outer: for v in 1..8i64 {
+                let mut s2 = s.clone();
+                for &i in &vars {
+                    s2[i as usize] = Poly::int(v);
+                }
+                for l in &comp {
+                    match l.poly().subst_vars(&s2).as_const() {
+                        Some(q) if !q.is_zero() => {}
+                        _ => continue 'outer,
+                    }
+                }
+                s = s2;
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            return Ok(f);
+        }
+        self.e.k.instantiate(st.b, f, s, n)
+    }
+
     // ------------------------------------------------------------------
     // 解の形が決まったときの仕上げ
 
     /// 規則 f(x) → g(x)（g は x の f を含まない）
     fn solution_rule(&self, st: &BState) -> Option<RwRule> {
         let fx = Atom::F(std::rc::Rc::new(x()));
-        st.rules
-            .iter()
-            .find(|r| {
-                r.nvars == 1 && r.lhs == fx && {
-                    let mut bad = false;
-                    r.rhs.visit_atoms(&mut |a| {
-                        if matches!(a, Atom::F(_) | Atom::Inv(_)) && a.has_var() {
-                            bad = true;
-                        }
-                    });
-                    !bad
+        let mut best: Option<(usize, usize, RwRule)> = None;
+        for (idx, r) in st.rules.iter().enumerate() {
+            if r.nvars != 1 || r.lhs != fx {
+                continue;
+            }
+            let mut bad = false;
+            let mut params = 0;
+            r.rhs.visit_atoms(&mut |a| {
+                if matches!(a, Atom::F(_) | Atom::Inv(_)) {
+                    if a.has_var() {
+                        bad = true;
+                    } else {
+                        params += 1;
+                    }
                 }
-            })
-            .cloned()
+            });
+            if bad {
+                continue;
+            }
+            // パラメータが少ないものを優先、同数なら新しいもの
+            if best.as_ref().map_or(true, |(p, i, _)| params < *p || (params == *p && idx > *i)) {
+                best = Some((params, idx, r.clone()));
+            }
+        }
+        best.map(|(_, _, r)| r)
     }
 
     fn finalize(&mut self, st: &mut BState, rule: RwRule, depth: u32) -> Res<Fin> {
@@ -727,12 +883,64 @@ impl Searcher {
                 Some(r) => r,
                 None => return Ok(Fin::Continue),
             };
-            let _ = &rule;
+            // 解の形の規則を、他の規則で書き換え直す（パラメータ f(0) → 0 などを反映）
+            {
+                let rf = rule.fact;
+                let saved_rules = st.rules.clone();
+                let saved_cache = std::mem::take(&mut st.cache);
+                st.rules.retain(|r| r.fact != rf);
+                let rf2 = self.e.rewrite_clause(st, rf);
+                st.rules = saved_rules;
+                st.cache = saved_cache;
+                let rf2 = rf2?;
+                if rf2 != rf && self.e.clause(rf2) != self.e.clause(rf) {
+                    st.units.retain(|u| *u != rf);
+                    st.rules.retain(|r| r.fact != rf);
+                    st.cache.clear();
+                    self.e.add_fact(st, rf2)?;
+                    if self.closed(st) {
+                        return Ok(Fin::Done);
+                    }
+                    continue;
+                }
+            }
+            // パラメータ f(c) の点で規則を例化した f(c) = g(c) を加える（パラメータの自己整合条件）
+            let mut params: Vec<Poly> = Vec::new();
+            for (m, _) in rule.rhs.terms() {
+                for (a, _) in m.factors() {
+                    if let Atom::F(c) = a {
+                        if !c.has_var() && !params.contains(c) {
+                            params.push((**c).clone());
+                        }
+                    }
+                }
+            }
+            for c in params {
+                let key = format!("selfc|{:?}|{:?}", rule.fact, c);
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let f0 = self.e.k.instantiate(st.b, rule.fact, vec![c], 0)?;
+                self.e.add_fact(st, f0)?;
+                if self.closed(st) {
+                    return Ok(Fin::Done);
+                }
+            }
+            let rule = match self.solution_rule(st) {
+                Some(r) => r,
+                None => return Ok(Fin::Continue),
+            };
             // 公理を書き換えて x, y の恒等式にする
             let ax = self.e.k.axiom();
             let inst = self.e.k.instantiate(st.b, ax, vec![x(), y()], 2)?;
             let ef = self.e.rewrite_clause(st, inst)?;
             let c = self.e.clause(ef).clone();
+            if std::env::var("FE_DEBUG").is_ok() {
+                eprintln!("finalize b{}: rule {} -> {} ; E = {}", st.b.0, rule.lhs, rule.rhs, c);
+                for r in &st.rules {
+                    if r.nvars <= 1 { eprintln!("    rule {} -> {}", r.lhs, r.rhs); }
+                }
+            }
             if c.is_false() {
                 return Ok(Fin::Done);
             }

@@ -33,6 +33,8 @@ pub struct BState {
     pub nes: Vec<Fact>,
     /// 逆数のわかっている閉じた式 (u, inv(u))
     pub invs: Vec<(Poly, Poly)>,
+    /// 単射性の仮定「∀x,y. f(x) − f(y) ≠ 0 ∨ x − y = 0」
+    pub inj: Option<Fact>,
     /// 単位等式（正規化・簡約済み）
     pub units: Vec<Fact>,
     /// その他の節（選言・不等式など）
@@ -51,6 +53,7 @@ impl BState {
             pow_rules: vec![],
             nes: vec![],
             invs: vec![],
+            inj: None,
             units: vec![],
             others: vec![],
             keys: HashSet::new(),
@@ -157,6 +160,18 @@ impl Engine {
         // 最上位の規則
         let mut applied = None;
         for (ri, r) in st.rules.iter().enumerate() {
+            // 解の形の規則 f(x) → g(x; f(c)…) は、自分のパラメータ f(c) を書き換えない
+            if !cur_atom.has_var() && r.nvars == 1 && matches!(&r.lhs, Atom::F(p) if **p == Poly::var(0)) {
+                let mut is_param = false;
+                r.rhs.visit_atoms(&mut |b| {
+                    if *b == cur_atom {
+                        is_param = true;
+                    }
+                });
+                if is_param {
+                    continue;
+                }
+            }
             if let Some(s) = match_atom(&r.lhs, r.nvars, &cur_atom) {
                 let rhs = r.rhs.subst_vars(&s);
                 if all_atoms_less(&rhs, &cur_atom) {
@@ -483,7 +498,7 @@ impl Engine {
         let mut cur = f;
         loop {
             let c = self.clause(cur).clone();
-            if c.lits().len() < 2 {
+            if c.lits().is_empty() {
                 return Ok(cur);
             }
             let mut hit = None;
@@ -500,9 +515,40 @@ impl Engine {
             }
             match hit {
                 Some((i, ne)) => cur = self.k.resolve(st.b, cur, i, ne, 0)?,
-                None => return Ok(cur),
+                None => break,
             }
         }
+        // 単位等式 u·Q = 0 で u ≠ 0 が既知なら Q = 0
+        for _ in 0..4 {
+            let c = self.clause(cur).clone();
+            if c.lits().len() != 1 || c.lits()[0].rel() != Rel::Eq {
+                return Ok(cur);
+            }
+            let p = c.lits()[0].poly().clone();
+            let mut done = true;
+            for &ne in &st.nes.clone() {
+                let u = self.poly0(ne);
+                if u.as_const().is_some() {
+                    continue;
+                }
+                if let Some(q) = crate::polyutil::exact_div(&p, &u) {
+                    if q.as_const().is_some() {
+                        continue;
+                    }
+                    let z = self.k.zero_product(st.b, cur, 0, vec![u.clone(), q])?;
+                    let zc = self.clause(z).clone();
+                    if let Some(i) = zc.lits().iter().position(|l| *l == Lit::eq(u.clone())) {
+                        cur = self.k.resolve(st.b, z, i, ne, 0)?;
+                        done = false;
+                        break;
+                    }
+                }
+            }
+            if done {
+                break;
+            }
+        }
+        Ok(cur)
     }
 
     /// 閉じた u ≠ 0 から u·inv(u) = 1 を作り、単項式の規則として登録する（u が単一の原子のとき）
