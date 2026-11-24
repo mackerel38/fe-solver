@@ -516,6 +516,19 @@ impl Searcher {
                     self.try_instance(st, g, s, 2)?;
                 }
             }
+            // 全射性の証人: f(S(x)) = a·x + b なら v := S((v − b)/a) で f(v) を v にできる
+            if round >= 1 {
+                for w in self.witnesses(st) {
+                    for v in 0..2usize {
+                        if self.closed(st) || !st.units.contains(&g) {
+                            break;
+                        }
+                        let mut sb = vec![x(), y()];
+                        sb[v] = w.subst_vars(&[Poly::var(v as u32)]);
+                        self.try_instance(st, g, sb, 2)?;
+                    }
+                }
+            }
             // 打ち消しの代入
             let p = self.e.poly0(g);
             let invs = st.invs.clone();
@@ -554,6 +567,48 @@ impl Searcher {
             }
         }
         Ok(())
+    }
+
+    /// 全射性の証人 S（f(S(t)) = t）。1 変数の単位等式 f(u(x)) = a·x + b（a ≠ 0 の有理数, b は閉じた式）から S(t) = u((t − b)/a)
+    fn witnesses(&self, st: &BState) -> Vec<Poly> {
+        let mut out: Vec<Poly> = Vec::new();
+        for &f in &st.units {
+            if self.e.nvars(f) != 1 {
+                continue;
+            }
+            let p = self.e.poly0(f);
+            for (m, lam) in p.terms() {
+                if m.factors().len() != 1 || m.factors()[0].1 != 1 {
+                    continue;
+                }
+                let u = match &m.factors()[0].0 {
+                    Atom::F(u) if u.has_var() && **u != x() => (**u).clone(),
+                    _ => continue,
+                };
+                let r = Poly::mono(m.clone(), lam.clone()).sub(&p).scale(&(Q::one() / lam));
+                let cs = coeffs_in(&r, &Atom::Var(0));
+                if cs.keys().max() != Some(&1) || r.has_f() && f_atoms_with_vars(&r).len() > 0 {
+                    continue;
+                }
+                let a = match cs.get(&1).and_then(|c| c.as_const()) {
+                    Some(a) if !a.is_zero() => a,
+                    _ => continue,
+                };
+                let bb = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
+                if bb.has_var() {
+                    continue;
+                }
+                let arg = x().sub(&bb).scale(&(Q::one() / a));
+                let w = u.subst_vars(&[arg]);
+                if poly_size(&w) <= 24 && !out.contains(&w) {
+                    out.push(w);
+                }
+            }
+            if out.len() >= 3 {
+                break;
+            }
+        }
+        out
     }
 
     /// f の引数を打ち消す・単純にする代入（2 変数のまま）
