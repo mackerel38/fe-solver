@@ -90,13 +90,43 @@ fn congruence_ok_and_errors() {
     let mut k = k_fxfy();
     let a = k.axiom();
     let ffy = k.instantiate(ROOT, a, vec![c(0), x()], 1).unwrap(); // f(f(x)) - x = 0
-    // f(u + (f(f(x)) - x)) = f(u) で u = x: f(f(f(x))) = f(x)
-    let r = k.congruence(ROOT, ffy, 0, x()).unwrap();
+    // f(u + 1·(f(f(x)) - x)) = f(u) で u = x: f(f(f(x))) = f(x)
+    let r = k.congruence(ROOT, 1, x(), vec![(c(1), ffy, 0)]).unwrap();
     assert_eq!(*k.clause(r), cl(1, vec![Lit::eq(f(f(f(x()))).sub(&f(x())))]));
+    // 乗数つき・複数前提: f(y + 2(f(f(y)) - y)) と f(y) が等しい
+    let ffy2 = k.instantiate(ROOT, a, vec![c(0), y()], 2).unwrap();
+    let r2 = k.congruence(ROOT, 2, y(), vec![(c(2), ffy2, 0), (c(1), ffy, 0)]).unwrap();
+    let arg = y().add(&f(f(y())).sub(&y()).scale(&q(2))).add(&f(f(x())).sub(&x()));
+    assert_eq!(*k.clause(r2), cl(2, vec![Lit::eq(f(arg).sub(&f(y())))]));
     let sq = k.pos_comb(ROOT, 1, vec![], vec![], vec![(q(1), x())], q(0), false).unwrap();
-    assert!(k.congruence(ROOT, sq, 0, x()).is_err());
+    assert!(k.congruence(ROOT, 1, x(), vec![(c(1), sq, 0)]).is_err());
     // 範囲外の変数を base に使えない
-    assert!(k.congruence(ROOT, ffy, 0, y()).is_err());
+    assert!(k.congruence(ROOT, 1, y(), vec![(c(1), ffy, 0)]).is_err());
+    // 前提の変数が多すぎる
+    assert!(k.congruence(ROOT, 1, x(), vec![(c(1), ffy2, 0)]).is_err());
+    assert!(k.congruence(ROOT, 1, x(), vec![]).is_err());
+}
+
+#[test]
+fn eq_or_ne_rule() {
+    let mut k = k_simple();
+    let e = k.eq_or_ne(ROOT, 1, x().sub(&c(2))).unwrap();
+    assert_eq!(*k.clause(e), cl(1, vec![Lit::eq(x().sub(&c(2))), Lit::ne(x().sub(&c(2)))]));
+    assert!(k.eq_or_ne(ROOT, 1, y()).is_err());
+    // 条件付き代入の例: x = 0 ∨ f(x) = x と f(0) = 0 から f(x) = x
+    let k2 = Kernel::new(f(x().mul(&y())), x().mul(&f(y()))).unwrap();
+    let mut k2 = k2;
+    let a = k2.axiom();
+    let p1 = k2.instantiate(ROOT, a, vec![x(), c(1)], 1).unwrap(); // f(x) = x f(1)
+    let p0 = k2.instantiate(ROOT, a, vec![c(0), c(0)], 0).unwrap(); // f(0) = 0
+    let em = k2.eq_or_ne(ROOT, 1, x()).unwrap(); // x = 0 ∨ x ≠ 0
+    let ei = k2.clause(em).lits().iter().position(|l| l.rel() == Rel::Eq).unwrap();
+    // x = 0 なら f(x) = f(0): congruence(base 0, 1·x)
+    let cg = k2.congruence(ROOT, 1, c(0), vec![(c(1), em, ei)]).unwrap(); // f(x) - f(0) = 0 ∨ x ≠ 0
+    let ci = k2.clause(cg).lits().iter().position(|l| l.rel() == Rel::Eq).unwrap();
+    let lc = k2.lincomb(ROOT, 1, vec![(c(1), cg, ci), (c(1), p0, 0)]).unwrap(); // f(x) = 0 ∨ x ≠ 0
+    assert_eq!(*k2.clause(lc), cl(1, vec![Lit::eq(f(x())), Lit::ne(x())]));
+    let _ = p1;
 }
 
 #[test]

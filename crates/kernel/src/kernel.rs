@@ -51,7 +51,8 @@ pub enum Rule {
     Hypothesis { parent: BranchId, child_index: usize },
     Instantiate { premise: Fact, subst: Vec<Poly> },
     LinComb { items: Vec<(Poly, Fact, usize)> },
-    Congruence { premise: Fact, lit: usize, base: Poly },
+    Congruence { base: Poly, items: Vec<(Poly, Fact, usize)> },
+    EqOrNe { poly: Poly },
     ZeroProduct { premise: Fact, lit: usize, factors: Vec<Poly> },
     NonzeroFactor { premise: Fact, lit: usize, factors: Vec<Poly>, index: usize },
     Resolve { a: Fact, la: usize, b: Fact, lb: usize },
@@ -402,21 +403,43 @@ impl Kernel {
     }
 
     /// 規則 Congruence（関数の合同性）:
-    /// 選ばれたリテラルが p = 0（残り S）なら、任意の式 u について
-    /// 「f(u + p) − f(u) = 0 ∨ S」。根拠: p = 0 なら u + p = u なので f の値も等しい。
-    pub fn congruence(&mut self, target: BranchId, premise: Fact, lit: usize, base: Poly) -> R<Fact> {
+    /// 各前提 i の選ばれたリテラルが p_i = 0（残り S_i）で、変数は番号で共有する。任意の式 u と多項式 m_i について
+    /// 「f(u + Σ m_i p_i) − f(u) = 0 ∨ S_1 ∨ … ∨ S_k」。
+    /// 根拠: どの S_i も偽になる点では各 p_i = 0 なので u + Σ m_i p_i = u となり、f の値も等しい。
+    pub fn congruence(&mut self, target: BranchId, nvars: u32, base: Poly, items: Vec<(Poly, Fact, usize)>) -> R<Fact> {
         self.check_branch(target)?;
-        let c = self.premise(premise, target)?.clone();
-        let l = Self::lit_of(&c, lit)?;
-        if l.rel() != Rel::Eq {
-            return Err("合同性は等式リテラルにだけ使える".into());
+        if items.is_empty() {
+            return Err("合同性の前提がない".into());
         }
-        self.check_term(&base, c.nvars(), target)?;
-        let p = Poly::f(base.add(l.poly())).sub(&Poly::f(base.clone()));
+        self.check_term(&base, nvars, target)?;
+        let mut arg = base.clone();
+        let mut side = Vec::new();
+        for (m, f, li) in &items {
+            let c = self.premise(*f, target)?;
+            if c.nvars() > nvars {
+                return Err("前提の変数が多すぎる".into());
+            }
+            let l = Self::lit_of(c, *li)?;
+            if l.rel() != Rel::Eq {
+                return Err("合同性は等式リテラルにだけ使える".into());
+            }
+            self.check_term(m, nvars, target)?;
+            arg = arg.add(&m.mul(l.poly()));
+            side.extend(Self::side_lits(c, *li));
+        }
+        let p = Poly::f(arg).sub(&Poly::f(base.clone()));
         let mut lits = vec![Lit::eq(p)];
-        lits.extend(Self::side_lits(&c, lit));
-        let out = Clause::new(c.nvars(), lits)?;
-        Ok(self.push(out, target, Rule::Congruence { premise, lit, base }))
+        lits.extend(side);
+        let out = Clause::new(nvars, lits)?;
+        Ok(self.push(out, target, Rule::Congruence { base, items }))
+    }
+
+    /// 規則 EqOrNe（排中律, リテラル版）: 任意の式 p について「p = 0 ∨ p ≠ 0」。
+    pub fn eq_or_ne(&mut self, target: BranchId, nvars: u32, poly: Poly) -> R<Fact> {
+        self.check_branch(target)?;
+        self.check_term(&poly, nvars, target)?;
+        let out = Clause::new(nvars, vec![Lit::eq(poly.clone()), Lit::ne(poly.clone())])?;
+        Ok(self.push(out, target, Rule::EqOrNe { poly }))
     }
 
     /// 規則 ZeroProduct（積が 0 なら因子のどれかが 0）:

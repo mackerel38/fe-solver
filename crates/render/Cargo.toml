@@ -6,3 +6,4 @@ description = "検証核の導出記録から日本語の証明文を機械的�
 
 [dependencies]
 fe_kernel = { path = "../kernel" }
+num-traits = "0.2"

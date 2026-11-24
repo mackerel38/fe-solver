@@ -23,6 +23,7 @@ name = "fe_render"
 version = "0.1.0"
 dependencies = [
  "fe_kernel",
+ "num-traits",
 ]
 
 [[package]]
