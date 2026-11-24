@@ -13,10 +13,17 @@ fn json_str(s: &str) -> String {
 }
 
 fn main() {
+    // 探索は再帰が深くなりうるので大きなスタックのスレッドで動かす
+    let h = std::thread::Builder::new().stack_size(512 << 20).spawn(real_main).expect("thread");
+    let code = h.join().unwrap_or(101);
+    std::process::exit(code);
+}
+
+fn real_main() -> i32 {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: fe_solver solve <FE-XXXX | equation> [--timeout SEC] [--json] [--proof] | list [set]");
-        std::process::exit(2);
+        return 2;
     }
     match args[1].as_str() {
         "list" => {
@@ -99,7 +106,8 @@ fn main() {
         }
         other => {
             eprintln!("unknown command {}", other);
-            std::process::exit(2);
+            return 2;
         }
     }
+    0
 }

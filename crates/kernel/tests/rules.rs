@@ -417,3 +417,43 @@ fn literal_normalization_is_sound() {
     assert_eq!(Lit::ge(x()).negate(), Lit::gt(x().neg()));
     assert_eq!(Lit::eq(x()).negate(), Lit::ne(x()));
 }
+
+#[test]
+fn abandon_split_rule() {
+    let mut k = k_simple();
+    let a = k.axiom();
+    let (c0, _h0, c1, hs, consts) = k.split_em(ROOT, cl(1, vec![Lit::eq(f(x()).sub(&x()))])).unwrap();
+    let ac = Poly::cnst(consts[0]);
+    let p1 = k.instantiate(c1, a, vec![ac.clone(), c(0)], 0).unwrap();
+    let _ = hs;
+    let p0 = k.instantiate(c0, a, vec![x(), c(0)], 1).unwrap();
+    k.abandon_split(ROOT).unwrap();
+    // 子孫の枝・事実・定数はもう使えない
+    assert!(k.instantiate(c1, a, vec![x(), c(0)], 1).is_err());
+    assert!(k.lincomb(ROOT, 1, vec![(c(1), p0, 0)]).is_err());
+    assert!(k.lincomb(ROOT, 0, vec![(c(1), p1, 0)]).is_err());
+    assert!(k.instantiate(ROOT, a, vec![ac, c(0)], 0).is_err());
+    // 根は再び葉で、別の場合分けができる
+    assert!(k.branch(ROOT).children().is_empty());
+    let (d0, _, d1, _, _) = k.split_em(ROOT, cl(0, vec![Lit::eq(f(c(0)))])).unwrap();
+    assert!(k.lincomb(d0, 1, vec![(c(1), p0, 0)]).is_err(), "取り消した枝の事実は新しい子でも使えない");
+    let _ = d1;
+    // 取り消した枝の解の確定は結論に影響しない
+    let concl = k.conclude();
+    assert!(!concl.complete);
+    // 二度目の取り消しは可能、場合分けのない枝の取り消しは不可
+    k.abandon_split(ROOT).unwrap();
+    assert!(k.abandon_split(ROOT).is_err());
+}
+
+#[test]
+fn abandon_split_refused_after_merge() {
+    let mut k = k_simple();
+    let a = k.axiom();
+    let (c0, _h0, c1, _hs, _) = k.split_em(ROOT, cl(0, vec![Lit::eq(f(c(1)).sub(&c(1)))])).unwrap();
+    let p0 = k.instantiate(c0, a, vec![x(), c(0)], 1).unwrap();
+    let p1 = k.instantiate(c1, a, vec![x(), c(0)], 1).unwrap();
+    let m = k.merge(ROOT, vec![Some(p0), Some(p1)]).unwrap();
+    assert!(k.abandon_split(ROOT).is_err());
+    assert!(k.lincomb(ROOT, 1, vec![(c(1), m, 0)]).is_ok());
+}

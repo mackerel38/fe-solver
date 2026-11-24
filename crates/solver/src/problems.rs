@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Set {
-    /// 評価セットのうち未見セットでないもの
+    /// 評価セットのうち初見セットでないもの
     Seen,
-    /// 未見セット（評価セットから固定の乱数で取り分けたもの）
+    /// 初見セット（評価セットから固定の乱数で取り分けたもの）
     Unseen,
     /// 挑戦セット（サイトで solved でないもの）
     Challenge,

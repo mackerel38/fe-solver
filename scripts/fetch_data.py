@@ -9,7 +9,7 @@
       solutions/FE-*.md       frontmatter の status（solved/open）・著者など
 
 注意: solutions/*.md の本文（解答）は取り込まない。frontmatter だけを抽出する。
-      未見セットの外部解答を読まないための措置（DECISIONS.md 参照）。
+      初見セットの外部解答を読まないための措置（DECISIONS.md 参照）。
 
 使い方: python3 -I scripts/fetch_data.py [作業用ディレクトリ]
 出力: data/problems.json, data/source.json, data/raw/*

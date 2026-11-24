@@ -30,14 +30,15 @@ pub fn coef_weight(c: &fe_kernel::Q) -> u32 {
     use num_traits::ToPrimitive;
     let n = c.numer().abs().to_u64().unwrap_or(u64::MAX / 4);
     let d = c.denom().to_u64().unwrap_or(u64::MAX / 4);
-    (n.saturating_add(d).saturating_sub(2)).min(1 << 20) as u32
+    let neg = if c.numer() < &num_bigint::BigInt::from(0) { 1 } else { 0 };
+    (n.saturating_add(d).saturating_sub(2)).min(1 << 20) as u32 + neg
 }
 
 pub fn poly_weight(p: &Poly) -> u32 {
     let mut w: u32 = 0;
     for (m, c) in p.terms() {
         w = w.saturating_add(1);
-        if !c.abs().is_one() {
+        if !c.is_one() {
             w = w.saturating_add(coef_weight(c));
         }
         for (a, e) in m.factors() {

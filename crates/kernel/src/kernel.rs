@@ -103,9 +103,16 @@ pub struct BranchRec {
     hyps: Vec<Fact>,
     contradiction: Option<Fact>,
     solution: Option<(Fact, Family)>,
+    /// 取り消された場合分けの子孫（以後どこでも使えない）
+    dead: bool,
+    /// この枝の場合分けから Merge で事実を持ち上げたか（取り消し不可になる）
+    merged: bool,
 }
 
 impl BranchRec {
+    pub fn is_dead(&self) -> bool {
+        self.dead
+    }
     pub fn parent(&self) -> Option<BranchId> {
         self.parent
     }
@@ -207,6 +214,8 @@ impl Kernel {
                 hyps: vec![],
                 contradiction: None,
                 solution: None,
+                dead: false,
+                merged: false,
             }],
             consts: Vec::new(),
             axiom: Fact { kernel: id, idx: 0 },
@@ -296,11 +305,13 @@ impl Kernel {
         Ok(&self.facts[f.idx as usize])
     }
     fn check_branch(&self, b: BranchId) -> R<()> {
-        if (b.0 as usize) < self.branches.len() {
-            Ok(())
-        } else {
-            Err("存在しない枝".into())
+        if (b.0 as usize) >= self.branches.len() {
+            return Err("存在しない枝".into());
         }
+        if self.branches[b.0 as usize].dead {
+            return Err("取り消された枝".into());
+        }
+        Ok(())
     }
     /// 事実 f が枝 target で使える（f の枝が target の祖先または自身）ことを確かめて節を返す
     fn premise(&self, f: Fact, target: BranchId) -> R<&Clause> {
@@ -693,6 +704,8 @@ impl Kernel {
             hyps: vec![],
             contradiction: None,
             solution: None,
+            dead: false,
+            merged: false,
         });
         self.branches[parent.0 as usize].children.push(id);
         id
@@ -801,7 +814,33 @@ impl Kernel {
         }
         let clause = clause.ok_or("すべての子が閉じている（矛盾は自動的に親へ伝わる）")?;
         self.check_clause_terms(&clause, b)?;
+        self.branches[b.0 as usize].merged = true;
         Ok(self.push(clause, b, Rule::Merge { parent: b, facts }))
+    }
+
+    /// 操作 AbandonSplit（場合分けの取り消し）:
+    /// 枝 b の場合分けをなかったことにし、b を再び葉に戻す。子孫の枝はすべて無効になり、
+    /// その事実・定数は以後どこでも使えない（無効な枝を対象にした規則の呼び出しはすべて拒否される）。
+    /// 根拠: 子孫の枝の事実はもともと子孫の枝でしか使えない（前提の祖先検査・定数のスコープ検査）ので、
+    /// それらを捨てても b とその祖先で成り立つ事実には影響しない。ただし Merge で子から b へ持ち上げた
+    /// 事実がある場合は、その根拠を残すため取り消せない。
+    pub fn abandon_split(&mut self, b: BranchId) -> R<()> {
+        self.check_branch(b)?;
+        if self.branches[b.0 as usize].merged {
+            return Err("Merge で事実を持ち上げた場合分けは取り消せない".into());
+        }
+        let children = std::mem::take(&mut self.branches[b.0 as usize].children);
+        if children.is_empty() {
+            return Err("場合分けされていない".into());
+        }
+        let mut stack = children;
+        while let Some(c) = stack.pop() {
+            let r = &mut self.branches[c.0 as usize];
+            r.dead = true;
+            stack.extend(r.children.iter().copied());
+        }
+        self.branches[b.0 as usize].split = None;
+        Ok(())
     }
 
     // ------------------------------------------------------------------

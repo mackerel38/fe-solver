@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 pub struct Searcher {
     pub e: Engine,
+    pub round_budget: usize,
     pub open: Vec<(BranchId, String)>,
     pub max_depth: u32,
     pub stats: BTreeMap<String, u64>,
@@ -105,7 +106,11 @@ pub enum Fin {
 
 impl Searcher {
     pub fn new(e: Engine) -> Searcher {
-        Searcher { e, open: vec![], max_depth: 6, stats: BTreeMap::new() }
+        Searcher { e, round_budget: 0, open: vec![], max_depth: 6, stats: BTreeMap::new() }
+    }
+
+    fn add_time(&mut self, k: &str, t0: Instant) {
+        *self.stats.entry(k.to_string()).or_insert(0) += t0.elapsed().as_millis() as u64;
     }
 
     fn bump(&mut self, k: &str) {
@@ -147,7 +152,7 @@ impl Searcher {
 
     fn solve_branch_inner(&mut self, st: &mut BState, depth: u32) -> Res<()> {
         let mut stale = 0;
-        for round in 0..8 {
+        for round in 0..12 {
             self.e.check_time()?;
             if self.closed(st) {
                 return Ok(());
@@ -170,12 +175,31 @@ impl Searcher {
                 }
             }
             let before = st.units.len() + st.others.len();
-            self.instances(st, round)?;
+            let t0 = Instant::now();
+            let r = self.instances(st, round);
+            self.add_time("t_instances", t0);
+            r?;
             if self.closed(st) {
                 return Ok(());
             }
-            self.eliminate(st)?;
-            self.zero_products(st)?;
+            let t0 = Instant::now();
+            let r = self.eliminate(st);
+            self.add_time("t_elim", t0);
+            r?;
+            let t0 = Instant::now();
+            let r = self.zero_products(st);
+            self.add_time("t_zp", t0);
+            r?;
+            if self.closed(st) {
+                return Ok(());
+            }
+            let t0 = Instant::now();
+            let r = self.eliminate2(st);
+            self.add_time("t_elim2", t0);
+            r?;
+            if depth < self.max_depth && self.split_disjoint(st, depth)? {
+                return Ok(());
+            }
             let after = st.units.len() + st.others.len();
             if after == before {
                 stale += 1;
@@ -207,7 +231,7 @@ impl Searcher {
     // 代入による事実の生成
 
     fn try_instance(&mut self, st: &mut BState, f: Fact, s: Vec<Poly>, nv: u32) -> Res<bool> {
-        if self.solution_rule(st).is_some() {
+        if self.solution_rule(st).is_some() || self.round_budget == 0 {
             return Ok(false);
         }
         let key = format!("{:?}|{:?}", f, s);
@@ -215,6 +239,7 @@ impl Searcher {
             return Ok(false);
         }
         self.bump("instances");
+        self.round_budget -= 1;
         let _ = nv;
         let nv = s.iter().flat_map(|t| t.vars()).max().map_or(0, |m| m + 1);
         let inst = self.e.k.instantiate(st.b, f, s, nv)?;
@@ -226,6 +251,7 @@ impl Searcher {
     }
 
     fn instances(&mut self, st: &mut BState, round: usize) -> Res<()> {
+        self.round_budget = 80 + 40 * round;
         // 生成元: 2 変数の単位等式（小さい順）
         let mut gens: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
         gens.sort_by_key(|f| poly_size(&self.e.poly0(*f)));
@@ -255,6 +281,24 @@ impl Searcher {
             }
             if !st.units.contains(&g) {
                 continue;
+            }
+            // 2 変数のままの代入（P(f(x), y) など）
+            if round >= 1 {
+                let fy = Poly::f(y());
+                let two: Vec<Vec<Poly>> = vec![
+                    vec![fx.clone(), y()],
+                    vec![x(), fy.clone()],
+                    vec![x().neg(), y()],
+                    vec![x(), y().neg()],
+                    vec![y(), x()],
+                    vec![fx.clone(), fy.clone()],
+                ];
+                for s in two {
+                    if self.closed(st) || !st.units.contains(&g) {
+                        break;
+                    }
+                    self.try_instance(st, g, s, 2)?;
+                }
             }
             // 打ち消しの代入
             let p = self.e.poly0(g);
@@ -426,6 +470,138 @@ impl Searcher {
         Ok(())
     }
 
+    /// 2 変数の単位等式どうしの消去: 大きな原子を共有する事実の差から、より小さな事実を作る
+    fn eliminate2(&mut self, st: &mut BState) -> Res<()> {
+        let rows_in: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+        if rows_in.len() < 2 {
+            return Ok(());
+        }
+        type Row = (BTreeMap<Mono, Q>, Vec<(Q, Fact)>);
+        // 消去の優先順位: 最大の原子が大きい単項式ほど先に消す
+        let key = |m: &Mono| -> (u32, Option<Atom>, u32) {
+            let mut best: Option<Atom> = None;
+            let mut fcount = 0;
+            for (a, e) in m.factors() {
+                if matches!(a, Atom::F(_)) {
+                    fcount += e;
+                }
+                if best.as_ref().map_or(true, |b| atom_cmp(a, b) == std::cmp::Ordering::Greater) {
+                    best = Some(a.clone());
+                }
+            }
+            (fcount, best, m.degree())
+        };
+        let cmpm = |a: &Mono, b: &Mono| -> std::cmp::Ordering {
+            let (fa, aa, da) = key(a);
+            let (fb, ab, db) = key(b);
+            let c = match (&aa, &ab) {
+                (Some(x), Some(y)) => atom_cmp(x, y),
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (None, None) => std::cmp::Ordering::Equal,
+            };
+            c.then_with(|| fa.cmp(&fb)).then_with(|| da.cmp(&db)).then_with(|| a.cmp(b))
+        };
+        let mut basis: Vec<(Mono, Row)> = Vec::new();
+        let sub = |r: &mut Row, other: &Row, k: &Q| {
+            for (m, c) in &other.0 {
+                let e = r.0.entry(m.clone()).or_insert_with(Q::zero);
+                *e -= c * k;
+            }
+            r.0.retain(|_, c| !c.is_zero());
+            for (c, f) in &other.1 {
+                r.1.push((-(c * k), *f));
+            }
+        };
+        let mut outputs: Vec<Row> = Vec::new();
+        for f in &rows_in {
+            let p = self.e.poly0(*f);
+            let mut row: Row = (p.terms().iter().cloned().collect(), vec![(Q::one(), *f)]);
+            loop {
+                let mut changed = false;
+                for (pm, prow) in &basis {
+                    if let Some(c) = row.0.get(pm).cloned() {
+                        sub(&mut row, prow, &c);
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            if row.0.is_empty() {
+                continue;
+            }
+            if row.1.len() >= 2 {
+                outputs.push(row.clone());
+            }
+            let pm = row.0.keys().max_by(|a, b| cmpm(a, b)).cloned().unwrap();
+            let c = row.0[&pm].clone();
+            let inv = Q::one() / &c;
+            for v in row.0.values_mut() {
+                *v *= &inv;
+            }
+            for t in row.1.iter_mut() {
+                t.0 *= &inv;
+            }
+            basis.push((pm, row));
+        }
+        let mut made = 0;
+        for (row, combo) in outputs {
+            if made >= 8 || self.closed(st) {
+                break;
+            }
+            let mut agg: BTreeMap<Fact, Q> = BTreeMap::new();
+            for (c, f) in combo {
+                *agg.entry(f).or_insert_with(Q::zero) += c;
+            }
+            let items: Vec<(Poly, Fact, usize)> =
+                agg.into_iter().filter(|(_, c)| !c.is_zero()).map(|(f, c)| (Poly::constant(c), f, 0)).collect();
+            if items.len() < 2 {
+                continue;
+            }
+            let p = Poly::from_terms(row.into_iter().collect());
+            if poly_size(&p) > 60 {
+                continue;
+            }
+            self.bump("elim2");
+            let nf = self.e.k.lincomb(st.b, 2, items)?;
+            if let Added::New(_) = self.e.add_fact(st, nf)? {
+                made += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// 2 変数の単位等式が A(x)·B(y) = 0 と分解できれば、変数を共有しない選言として全体の場合分けをする
+    fn split_disjoint(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        let twos: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+        for f in twos {
+            let key = format!("dsplit|{:?}", self.e.clause(f));
+            if st.tried.contains(&key) {
+                continue;
+            }
+            st.tried.insert(key);
+            let p = self.e.poly0(f);
+            let (a, b) = match rank1_split(&p) {
+                Some(ab) => ab,
+                None => continue,
+            };
+            let zp = match self.e.k.zero_product(st.b, f, 0, vec![a, b]) {
+                Ok(z) => z,
+                Err(_) => continue,
+            };
+            if crate::search::n_components(self.e.clause(zp)) < 2 {
+                continue;
+            }
+            self.bump("split_disjoint");
+            let children = self.e.k.split_components(st.b, zp)?;
+            self.run_children(st, children, depth)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     // ------------------------------------------------------------------
     // 解の形が決まったときの仕上げ
 
@@ -514,6 +690,10 @@ impl Searcher {
                         continue;
                     }
                     let f = self.e.k.instantiate(st.b, ef, s, 0)?;
+                    if self.e.clause(f).is_false() {
+                        // この点で矛盾（0 でない定数 = 0）: 枝は閉じた
+                        return Ok(Fin::Done);
+                    }
                     let lc = val.leading_coeff().unwrap().clone();
                     insts.insert((i, j), (f, lc));
                 }
@@ -995,4 +1175,61 @@ fn solve_system(eqs: &[Poly], vars: &[u32], asg: BTreeMap<u32, Q>, out: &mut Vec
             return;
         }
     }
+}
+
+pub fn n_components(c: &fe_kernel::Clause) -> usize {
+    fe_kernel::kernel::components(c).len()
+}
+
+/// 単項式を x だけの部分と y だけの部分に分ける（x と y を両方含む原子があれば None）。閉じた原子は x 側に入れる。
+fn split_mono_xy(m: &Mono) -> Option<(Mono, Mono)> {
+    let mut mx = Mono::one();
+    let mut my = Mono::one();
+    for (a, e) in m.factors() {
+        let vs = Poly::from_atom(a.clone()).vars();
+        let piece = {
+            let mut t = Mono::one();
+            for _ in 0..*e {
+                t = t.mul(&Mono::atom(a.clone()));
+            }
+            t
+        };
+        if vs.contains(&0) && vs.contains(&1) {
+            return None;
+        } else if vs.contains(&1) {
+            my = my.mul(&piece);
+        } else {
+            mx = mx.mul(&piece);
+        }
+    }
+    Some((mx, my))
+}
+
+/// p(x, y) = A(x)·B(y) と分解できれば (A, B)（どちらも定数でない）
+pub fn rank1_split(p: &Poly) -> Option<(Poly, Poly)> {
+    let mut m: BTreeMap<Mono, BTreeMap<Mono, Q>> = BTreeMap::new();
+    for (mono, c) in p.terms() {
+        let (mx, my) = split_mono_xy(mono)?;
+        m.entry(mx).or_default().insert(my, c.clone());
+    }
+    let (x0, row0) = m.iter().next()?;
+    let (y0, c00) = row0.iter().next()?;
+    let _ = x0;
+    // A(x) = Σ_i M[i][y0] x_i, B(y) = Σ_j M[x0][j]/M[x0][y0] y_j
+    let mut a = Poly::zero();
+    for (mx, row) in &m {
+        let c = row.get(y0).cloned().unwrap_or_else(Q::zero);
+        a = a.add(&Poly::mono(mx.clone(), c));
+    }
+    let mut b = Poly::zero();
+    for (my, c) in row0 {
+        b = b.add(&Poly::mono(my.clone(), c / c00));
+    }
+    if a.mul(&b) != *p {
+        return None;
+    }
+    if !a.vars().contains(&0) || !b.vars().contains(&1) {
+        return None;
+    }
+    Some((a, b))
 }

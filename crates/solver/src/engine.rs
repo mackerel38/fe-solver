@@ -65,6 +65,9 @@ pub struct Engine {
     pub k: Kernel,
     pub deadline: Instant,
     pub rewrite_budget: usize,
+    pub timing: std::collections::BTreeMap<&'static str, u128>,
+    add_depth: u32,
+    pub size_cap: u32,
 }
 
 pub enum Added {
@@ -81,7 +84,7 @@ pub fn swap_xy(p: &Poly) -> Poly {
 
 impl Engine {
     pub fn new(k: Kernel, deadline: Instant) -> Engine {
-        Engine { k, deadline, rewrite_budget: 400 }
+        Engine { k, deadline, rewrite_budget: 400, timing: Default::default(), add_depth: 0, size_cap: 80 }
     }
 
     pub fn check_time(&self) -> Res<()> {
@@ -232,6 +235,12 @@ impl Engine {
 
     /// 節のすべてのリテラルを書き換える
     pub fn rewrite_clause(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
+        let t0 = Instant::now();
+        let r = self.rewrite_clause_inner(st, f);
+        *self.timing.entry("rewrite_clause").or_insert(0) += t0.elapsed().as_micros();
+        r
+    }
+    fn rewrite_clause_inner(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
         self.rewrite_budget = 400;
         let mut cur = f;
         let n = self.nvars(f);
@@ -325,6 +334,16 @@ impl Engine {
     /// 事実を簡約して知識に加える
     pub fn add_fact(&mut self, st: &mut BState, f: Fact) -> Res<Added> {
         self.check_time()?;
+        if self.add_depth > 8 {
+            return Ok(Added::Trivial);
+        }
+        self.add_depth += 1;
+        let r = self.add_fact_inner(st, f);
+        self.add_depth -= 1;
+        r
+    }
+
+    fn add_fact_inner(&mut self, st: &mut BState, f: Fact) -> Res<Added> {
         let f = self.canon_vars(st, f)?;
         let f = self.rewrite_clause(st, f)?;
         let f = self.canon_vars(st, f)?;
@@ -339,8 +358,20 @@ impl Engine {
         if st.keys.contains(&key) {
             return Ok(Added::Known);
         }
-        st.keys.insert(key);
+        // 大きすぎる事実は捨てる（探索の効率のため。捨てても健全性には影響しない）
+        if c.nvars() > 0 && c.lits().iter().map(|l| crate::order::poly_size(l.poly())).sum::<u32>() > self.size_cap {
+            return Ok(Added::Trivial);
+        }
+        st.keys.insert(key.clone());
         if c.lits().len() == 1 && c.lits()[0].rel() == Rel::Eq {
+            // 左辺が f(a·x + b)（b は閉じた式, (a,b) ≠ (1,0)）の規則は x → (x − b)/a で f(x) の形に直す
+            if let Some(r) = self.extract_rule(f) {
+                if let Some(sub) = affine_lhs_normalizer(&r) {
+                    let g = self.k.instantiate(st.b, f, vec![sub], 1)?;
+                    st.keys.remove(&key);
+                    return self.add_fact(st, g);
+                }
+            }
             st.units.push(f);
             if let Some(r) = self.extract_rule(f) {
                 self.install_rule(st, r)?;
@@ -389,6 +420,10 @@ impl Engine {
             }
         }
         let (a, coef) = best?;
+        // 複雑すぎる左辺の規則は作らない（ほとんど適用されず、相互簡約の費用だけがかかる）
+        if crate::order::atom_weight(&a) > 24 || crate::order::atom_depth(&a) > 3 {
+            return None;
+        }
         let rest = p.sub(&Poly::from_atom(a.clone()).scale(&coef));
         let rhs = rest.scale(&(-Q::one() / coef));
         Some(RwRule { fact: f, nvars: c.nvars(), lhs: a, rhs })
@@ -396,58 +431,125 @@ impl Engine {
 
     /// 規則を加え、既存の単位等式・規則を相互簡約する
     pub fn install_rule(&mut self, st: &mut BState, r: RwRule) -> Res<()> {
-        st.rules.push(r);
-        st.cache.clear();
-        // 相互簡約
-        let mut changed = true;
-        let mut rounds = 0;
-        while changed && rounds < 6 {
-            changed = false;
-            rounds += 1;
+        let t0 = Instant::now();
+        let res = self.install_rule_inner(st, r);
+        *self.timing.entry("install_rule").or_insert(0) += t0.elapsed().as_micros();
+        res
+    }
+    fn install_rule_inner(&mut self, st: &mut BState, r: RwRule) -> Res<()> {
+        st.rules.push(r.clone());
+        self.invalidate_cache(st, &r);
+        // 新しい規則で簡約できる単位等式だけを書き換え直す（連鎖的に生じた規則も同様）
+        let mut queue = vec![r];
+        let mut steps = 0;
+        while let Some(newr) = queue.pop() {
+            steps += 1;
+            if steps > 64 {
+                break;
+            }
             let units = st.units.clone();
             for u in units {
                 self.check_time()?;
-                // 自分自身の規則で自分を書き換えないよう、u の規則を一時的に外す
-                let saved: Vec<RwRule> = st.rules.clone();
-                st.rules.retain(|x| x.fact != u);
-                st.cache.clear();
-                let u2 = self.rewrite_clause(st, u);
-                st.rules = saved;
-                st.cache.clear();
-                let u2 = u2?;
-                if u2 == u {
+                if u == newr.fact || !st.units.contains(&u) {
                     continue;
                 }
-                let u2 = self.canon_vars(st, u2)?;
-                // u を u2 で置き換える
-                st.units.retain(|x| *x != u);
-                st.rules.retain(|x| x.fact != u);
-                changed = true;
-                let c = self.clause(u2).clone();
-                if c.is_false() {
-                    st.others.push(u2);
+                if !self.reducible_by(u, &newr) {
                     continue;
                 }
-                if c.is_tautology() {
-                    continue;
+                if let Some(r2) = self.resimplify_unit(st, u)? {
+                    queue.push(r2);
                 }
-                let key = Self::clause_key(&c);
-                if st.keys.contains(&key) && st.units.iter().any(|x| Self::clause_key(self.clause(*x)) == key) {
-                    continue;
-                }
-                st.keys.insert(key);
-                if c.lits().len() == 1 && c.lits()[0].rel() == Rel::Eq {
-                    st.units.push(u2);
-                    if let Some(r2) = self.extract_rule(u2) {
-                        st.rules.push(r2);
-                    }
-                } else {
-                    st.others.push(u2);
-                }
-                st.cache.clear();
             }
         }
         Ok(())
+    }
+
+    /// 新しい規則で簡約できる原子を含むキャッシュ項目だけを消す
+    pub fn invalidate_cache(&self, st: &mut BState, r: &RwRule) {
+        let ld = crate::order::atom_depth(&r.lhs);
+        let hit = |p: &Poly| -> bool {
+            let mut found = false;
+            p.visit_atoms(&mut |a| {
+                if found || !matches!(a, Atom::F(_)) || crate::order::atom_depth(a) < ld {
+                    return;
+                }
+                if let Some(s) = match_atom(&r.lhs, r.nvars, a) {
+                    if all_atoms_less(&r.rhs.subst_vars(&s), a) {
+                        found = true;
+                    }
+                }
+            });
+            found
+        };
+        st.cache.retain(|k, v| {
+            if hit(&Poly::from_atom(k.clone())) {
+                return false;
+            }
+            match v {
+                Some((r2, _)) => !hit(r2),
+                None => true,
+            }
+        });
+    }
+
+    /// 事実 u のどこか（入れ子も含む）に規則 r が適用できるか
+    fn reducible_by(&self, u: Fact, r: &RwRule) -> bool {
+        let mut found = false;
+        let ld = crate::order::atom_depth(&r.lhs);
+        for l in self.clause(u).lits() {
+            l.poly().visit_atoms(&mut |a| {
+                if found || !matches!(a, Atom::F(_)) || crate::order::atom_depth(a) < ld {
+                    return;
+                }
+                if let Some(s) = match_atom(&r.lhs, r.nvars, a) {
+                    if all_atoms_less(&r.rhs.subst_vars(&s), a) {
+                        found = true;
+                    }
+                }
+            });
+        }
+        found
+    }
+
+    /// 単位等式 u を、u 自身の規則を除いた規則で書き換え直して置き換える。新しい規則ができれば返す。
+    fn resimplify_unit(&mut self, st: &mut BState, u: Fact) -> Res<Option<RwRule>> {
+        let saved_cache = std::mem::take(&mut st.cache);
+        let saved_rules = st.rules.clone();
+        st.rules.retain(|x| x.fact != u);
+        let u2 = self.rewrite_clause(st, u);
+        st.rules = saved_rules;
+        st.cache = saved_cache;
+        let u2 = u2?;
+        if u2 == u {
+            return Ok(None);
+        }
+        let u2 = self.canon_vars(st, u2)?;
+        st.units.retain(|x| *x != u);
+        st.rules.retain(|x| x.fact != u);
+        let c = self.clause(u2).clone();
+        if c.is_false() {
+            st.others.push(u2);
+            return Ok(None);
+        }
+        if c.is_tautology() {
+            return Ok(None);
+        }
+        let key = Self::clause_key(&c);
+        if st.units.iter().any(|x| Self::clause_key(self.clause(*x)) == key) {
+            return Ok(None);
+        }
+        st.keys.insert(key);
+        if c.lits().len() == 1 && c.lits()[0].rel() == Rel::Eq {
+            st.units.push(u2);
+            if let Some(r2) = self.extract_rule(u2) {
+                st.rules.push(r2.clone());
+                self.invalidate_cache(st, &r2);
+                return Ok(Some(r2));
+            }
+        } else {
+            st.others.push(u2);
+        }
+        Ok(None)
     }
 
     /// すべての単位等式を現在の規則で簡約し直す
@@ -590,4 +692,38 @@ pub fn lead_ratio(stored: &Poly, target: &Poly) -> Option<Q> {
     } else {
         None
     }
+}
+
+/// 規則の左辺が f(a·x + b)（1 変数, b は閉じた式）で f(x) でないなら、x に代入すべき (x − b)/a を返す
+pub fn affine_lhs_normalizer(r: &RwRule) -> Option<Poly> {
+    if r.nvars != 1 {
+        return None;
+    }
+    let arg = match &r.lhs {
+        Atom::F(p) => (**p).clone(),
+        _ => return None,
+    };
+    if arg == Poly::var(0) {
+        return None;
+    }
+    // 右辺が x の f を含まない（正規化すると解の形 f(x) = g(x) になる）場合だけ
+    let mut bad = false;
+    r.rhs.visit_atoms(&mut |a| {
+        if matches!(a, Atom::F(_) | Atom::Inv(_)) && a.has_var() {
+            bad = true;
+        }
+    });
+    if bad {
+        return None;
+    }
+    let cs = crate::polyutil::coeffs_in(&arg, &Atom::Var(0));
+    if cs.keys().max() != Some(&1) {
+        return None;
+    }
+    let a = cs.get(&1)?.as_const()?;
+    let b = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
+    if b.has_var() {
+        return None;
+    }
+    Some(Poly::var(0).sub(&b).scale(&(Q::one() / a)))
 }

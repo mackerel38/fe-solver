@@ -2,7 +2,7 @@
 """ベンチマーク: 全問を時間制限つきで並列に解き、結果を記録して前回と比較し、テストも実行して要約する。
 
 使い方:
-  python3 scripts/bench.py                       # 全セット（評価 20 秒 / 挑戦 60 秒）+ テスト
+  python3 scripts/bench.py                       # 全セット（評価 60 秒 / 挑戦 300 秒）+ テスト
   python3 scripts/bench.py --sets seen,unseen    # 評価セットだけ
   python3 scripts/bench.py --timeout 5 --challenge-timeout 5 --jobs 4 --no-tests
   python3 scripts/bench.py --ids FE-0001,FE-0004
@@ -92,8 +92,8 @@ def run_tests():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sets", default="seen,unseen,challenge")
-    ap.add_argument("--timeout", type=float, default=20.0, help="評価・未見セットの 1 問あたり秒数")
-    ap.add_argument("--challenge-timeout", type=float, default=60.0)
+    ap.add_argument("--timeout", type=float, default=60.0, help="評価・初見セットの 1 問あたり秒数")
+    ap.add_argument("--challenge-timeout", type=float, default=300.0)
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--ids", default="")
     ap.add_argument("--no-tests", action="store_true")
@@ -190,7 +190,7 @@ def main():
 
     # 表示
     print(f"\n== ベンチマーク {stamp} ({summary['elapsed_s']} 秒, 評価 {args.timeout}s/問, 挑戦 {args.challenge_timeout}s/問)")
-    names = {"seen": "評価セット(既見)", "unseen": "未見セット", "challenge": "挑戦セット",
+    names = {"seen": "評価セット(既見)", "unseen": "初見セット", "challenge": "挑戦セット",
              "evaluation(=seen+unseen)": "評価セット全体"}
     for k in ("evaluation(=seen+unseen)", "seen", "unseen", "challenge"):
         if k in sets:

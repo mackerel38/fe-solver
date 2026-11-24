@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""評価セット/未見セット/挑戦セットの分割を作る（一度だけ実行し、結果を data/split.json に固定する）。
+"""評価セット/初見セット/挑戦セットの分割を作る（一度だけ実行し、結果を data/split.json に固定する）。
 
 - 評価セット: サイトで solved の問題
-- 未見セット: 評価セットから random.Random(SEED).sample で UNSEEN_COUNT 問を抽出
+- 初見セット: 評価セットから random.Random(SEED).sample で UNSEEN_COUNT 問を抽出
 - 挑戦セット: solved 以外（open）
 data/split.json が既にある場合は上書きしない（分け方の固定）。
 """

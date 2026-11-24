@@ -21,7 +21,12 @@ pub struct SolveOutput {
 pub fn solve(lhs: Poly, rhs: Poly, timeout: Duration) -> Result<SolveOutput, String> {
     let start = Instant::now();
     let k = Kernel::new(lhs, rhs)?;
-    let engine = Engine::new(k, start + timeout);
+    let mut engine = Engine::new(k, start + timeout);
+    {
+        let ax = engine.k.axiom();
+        let sz = crate::order::poly_size(engine.k.clause(ax).lits()[0].poly());
+        engine.size_cap = (2 * sz).max(60);
+    }
     let mut s = Searcher::new(engine);
     let mut error = None;
     if let Err(m) = s.solve_root() {
@@ -73,7 +78,7 @@ pub fn solve(lhs: Poly, rhs: Poly, timeout: Duration) -> Result<SolveOutput, Str
         reasons,
         error,
         elapsed: start.elapsed(),
-        stats: s.stats.clone().into_iter().collect(),
+        stats: s.stats.clone().into_iter().chain(s.e.timing.iter().map(|(k, v)| (format!("us_{}", k), *v as u64))).collect(),
         root_facts,
         kernel: s.e.k,
     })
