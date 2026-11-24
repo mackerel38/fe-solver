@@ -171,6 +171,7 @@ pub fn match_poly(pattern: &Poly, n: u32, target: &Poly) -> Option<Vec<Poly>> {
 pub fn match_atom(pattern: &Atom, n: u32, target: &Atom) -> Option<Vec<Poly>> {
     match (pattern, target) {
         (Atom::F(p), Atom::F(t)) | (Atom::Inv(p), Atom::Inv(t)) => match_poly(p, n, t),
+        (Atom::Const(i), Atom::Const(j)) if i == j => Some(vec![Poly::zero(); n as usize]),
         _ => None,
     }
 }

@@ -183,6 +183,9 @@ impl Searcher {
             if depth < self.max_depth && self.solution_rule(st).is_none() && self.pointwise_split(st, depth)? {
                 return Ok(());
             }
+            if depth < self.max_depth && self.solution_rule(st).is_none() && self.coef_split(st, depth)? {
+                return Ok(());
+            }
             self.pointwise_instances(st)?;
             if self.closed(st) {
                 return Ok(());
@@ -554,6 +557,19 @@ impl Searcher {
                 pool.push(x().pow(2).neg());
                 pool.push(Poly::int(-1));
             }
+            let all_ones: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
+            for f in all_ones {
+                let p = self.e.poly0(f);
+                for sb in affine_inv_substs(&p, &st.invs) {
+                    if self.closed(st) {
+                        return Ok(());
+                    }
+                    if !st.units.contains(&f) {
+                        break;
+                    }
+                    self.try_instance(st, f, vec![sb], 1)?;
+                }
+            }
             for f in ones {
                 for s in &pool {
                     if self.closed(st) {
@@ -567,6 +583,63 @@ impl Searcher {
             }
         }
         Ok(())
+    }
+
+    /// 閉じた係数 a（f(a·x + b) の a や a·f(x) の a）について「a = 0」と「a ≠ 0」に分ける（a ≠ 0 側では逆数を使える）
+    fn coef_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        let fx = Atom::F(std::rc::Rc::new(x()));
+        let mut cands: Vec<Poly> = Vec::new();
+        for &u in &st.units {
+            if self.e.nvars(u) != 1 {
+                continue;
+            }
+            let p = self.e.poly0(u);
+            let fatoms = f_atoms_with_vars(&p);
+            if fatoms.len() != 1 {
+                continue;
+            }
+            let arg = &fatoms[0];
+            let cs = coeffs_in(arg, &Atom::Var(0));
+            if cs.keys().max() == Some(&1) {
+                if let Some(a) = cs.get(&1) {
+                    if a.as_const().is_none() && !a.has_var() && !cands.contains(a) {
+                        cands.push(a.clone());
+                    }
+                }
+            }
+            if *arg == x() {
+                let c2 = coeffs_in(&p, &fx);
+                if c2.keys().max() == Some(&1) {
+                    if let Some(c) = c2.get(&1) {
+                        if c.as_const().is_none() && !c.has_var() && !cands.contains(c) {
+                            cands.push(c.clone());
+                        }
+                    }
+                }
+            }
+        }
+        for a in cands {
+            let an = a.monic();
+            let key = format!("coef|{:x}", hash_poly(&an));
+            if !st.tried.insert(key) {
+                continue;
+            }
+            if st.invs.iter().any(|(u, _)| u.monic() == an) {
+                continue;
+            }
+            // 既に 0 とわかっているなら分けない
+            let (a2, _) = self.e.rw_poly(st, &a, 0)?;
+            if a2.is_zero() || a2.as_const().is_some() {
+                continue;
+            }
+            let c = fe_kernel::Clause::new(0, vec![Lit::eq(a2)]).map_err(|e| e.to_string())?;
+            let (c0, h0, c1, hs, _) = self.e.k.split_em(st.b, c)?;
+            self.bump("coef_split");
+            let children = vec![(c0, h0), (c1, hs[0])];
+            self.run_children(st, children, depth)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// 全射性の証人 S（f(S(t)) = t）。1 変数の単位等式 f(u(x)) = a·x + b（a ≠ 0 の有理数, b は閉じた式）から S(t) = u((t − b)/a)
@@ -2164,4 +2237,34 @@ fn hash_poly(p: &Poly) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     p.hash(&mut h);
     h.finish()
+}
+
+/// 1 変数の式の f(a·x + b) で a の逆数 inv(a) がわかっていれば、x := (x − b)·inv(a)
+fn affine_inv_substs(p: &Poly, invs: &[(Poly, Poly)]) -> Vec<Poly> {
+    let mut out = Vec::new();
+    for arg in f_atoms_with_vars(p) {
+        let cs = coeffs_in(&arg, &Atom::Var(0));
+        if cs.keys().max() != Some(&1) {
+            continue;
+        }
+        let a = match cs.get(&1) {
+            Some(a) => a.clone(),
+            None => continue,
+        };
+        let b = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
+        if b.has_var() {
+            continue;
+        }
+        for (u, iu) in invs {
+            if *u == a || u.monic() == a.monic() {
+                // a = λu なら inv(a) = inv(u)/λ
+                let lam = a.leading_coeff().unwrap() / u.leading_coeff().unwrap();
+                let s = x().sub(&b).mul(iu).scale(&(Q::one() / lam));
+                if !out.contains(&s) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    out
 }

@@ -797,21 +797,26 @@ impl Engine {
     /// 閉じた u ≠ 0 から u·inv(u) = 1 を作り、単項式の規則として登録する（u が単一の原子のとき）
     fn make_inverse(&mut self, st: &mut BState, ne: Fact) -> Res<()> {
         let u = self.poly0(ne);
-        if u.terms().len() != 1 || !u.terms()[0].1.is_one() || u.terms()[0].0.factors().len() != 1 || u.terms()[0].0.factors()[0].1 != 1 {
+        if u.as_const().is_some() || u.has_var() || st.invs.iter().any(|(v, _)| *v == u) || st.invs.len() >= 6 {
             return Ok(());
         }
-        if st.invs.iter().any(|(v, _)| *v == u) {
+        if crate::order::poly_size(&u) > 24 {
             return Ok(());
         }
         let ax = self.k.inv_axiom(st.b, 0, u.clone())?;
         let i = self.clause(ax).lits().iter().position(|l| *l == Lit::eq(u.clone())).ok_or("inv")?;
         let r = self.k.resolve(st.b, ax, i, ne, 0)?;
-        let m = u.mul(&Poly::inv(u.clone()));
-        if m.terms().len() != 1 {
-            return Ok(());
-        }
-        st.pow_rules.push((r, m.terms()[0].0.clone(), Poly::one()));
-        st.invs.push((u.clone(), Poly::inv(u)));
+        // u·inv(u) − 1 = 0 を「最大の単項式 → 残り」の単項式の規則にする
+        let iu = Poly::inv(u.clone());
+        let e = u.mul(&iu).sub(&Poly::one());
+        let (lm, lc) = match e.terms().iter().max_by(|a, b| crate::polyutil::lex_cmp(&a.0, &b.0)) {
+            Some(t) => t.clone(),
+            None => return Ok(()),
+        };
+        let rhs = Poly::mono(lm.clone(), lc.clone()).sub(&e).scale(&(Q::one() / lc));
+        st.pow_rules.push((r, lm, rhs));
+        st.invs.push((u.clone(), iu));
+        st.cache.clear();
         Ok(())
     }
 
@@ -821,13 +826,11 @@ impl Engine {
         let hit = |p: &Poly| -> bool {
             let mut found = false;
             p.visit_atoms(&mut |a| {
-                if found || !matches!(a, Atom::F(_)) || crate::order::atom_depth(a) < ld {
+                if found || crate::order::atom_depth(a) < ld {
                     return;
                 }
-                if let Some(s) = match_atom(&r.lhs, r.nvars, a) {
-                    if all_atoms_less(&r.rhs.subst_vars(&s), a) {
-                        found = true;
-                    }
+                if rule_hits(r, a) {
+                    found = true;
                 }
             });
             found
@@ -849,13 +852,11 @@ impl Engine {
         let ld = crate::order::atom_depth(&r.lhs);
         for l in self.clause(u).lits() {
             l.poly().visit_atoms(&mut |a| {
-                if found || !matches!(a, Atom::F(_)) || crate::order::atom_depth(a) < ld {
+                if found || crate::order::atom_depth(a) < ld {
                     return;
                 }
-                if let Some(s) = match_atom(&r.lhs, r.nvars, a) {
-                    if all_atoms_less(&r.rhs.subst_vars(&s), a) {
-                        found = true;
-                    }
+                if rule_hits(r, a) {
+                    found = true;
                 }
             });
         }
@@ -1082,4 +1083,16 @@ pub fn affine_lhs_normalizer(r: &RwRule) -> Option<Poly> {
         return None;
     }
     Some(Poly::var(0).sub(&b).scale(&(Q::one() / a)))
+}
+
+/// 規則 r が原子 a に適用できるか（f・inv の原子は照合、定数の原子は一致）
+fn rule_hits(r: &RwRule, a: &Atom) -> bool {
+    match (&r.lhs, a) {
+        (Atom::F(_), Atom::F(_)) | (Atom::Inv(_), Atom::Inv(_)) => match match_atom(&r.lhs, r.nvars, a) {
+            Some(s) => all_atoms_less(&r.rhs.subst_vars(&s), a),
+            None => false,
+        },
+        (Atom::Const(i), Atom::Const(j)) => i == j,
+        _ => false,
+    }
 }
