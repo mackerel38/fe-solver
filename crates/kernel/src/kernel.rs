@@ -19,7 +19,7 @@
 use crate::clause::{Clause, Lit, Rel};
 use crate::piecewise::PwFamily;
 use crate::poly::{Atom, Poly, Q};
-use num_traits::{One, Signed};
+use num_traits::{One, Signed, Zero};
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -65,6 +65,7 @@ pub enum Rule {
     InvAxiom { poly: Poly },
     Weaken { premise: Fact, extra: Vec<Lit> },
     Merge { parent: BranchId, facts: Vec<Option<Fact>> },
+    CauchyBounded { additive: Fact, bound: Fact },
 }
 
 #[derive(Clone, Debug)]
@@ -696,6 +697,54 @@ impl Kernel {
         lits.extend(extra.iter().cloned());
         let out = Clause::new(nvars, lits)?;
         Ok(self.push(out, target, Rule::Weaken { premise, extra }))
+    }
+
+    /// 規則 CauchyBounded（コーシーの方程式の有界な解）:
+    /// 前提 A「∀x,y. f(x+y) − f(x) − f(y) + f(0) = 0」と、前提 B「∀x. x < 0 ∨ s·(f(x) − k) ≥ 0」
+    /// （s = ±1、k は変数を含まない式）から「∀x. f(x) − (f(1) − f(0))·x − f(0) = 0」。
+    /// 根拠: g(x) = f(x) − f(0) とおくと A より g は加法的（g(x+y) = g(x) + g(y)）。B より g は [0, ∞) で
+    /// 下に（s = −1 なら上に）有界。加法的関数は有理数倍を保ち（g(qx) = q·g(x)）、区間上で片側に有界なら
+    /// g(x) = g(1)·x（ダルブーの定理: 有界性から g(1)x − g(x) が有理数倍で任意に大きくなりえないことを使う）。
+    /// よって f(x) = (f(1) − f(0))x + f(0)。
+    pub fn cauchy_bounded(&mut self, target: BranchId, additive: Fact, bound: Fact) -> R<Fact> {
+        self.check_branch(target)?;
+        let ca = self.premise(additive, target)?.clone();
+        let cb = self.premise(bound, target)?.clone();
+        let x = Poly::var(0);
+        let y = Poly::var(1);
+        let f0 = Poly::f(Poly::zero());
+        let want_a = Clause::new(2, vec![Lit::eq(Poly::f(x.add(&y)).sub(&Poly::f(x.clone())).sub(&Poly::f(y.clone())).add(&f0))])?;
+        if ca != want_a {
+            return Err("前提 A が f(x+y) = f(x) + f(y) − f(0) の形ではない".into());
+        }
+        if cb.nvars() != 1 || cb.lits().len() != 2 {
+            return Err("前提 B の形が違う".into());
+        }
+        let cond = Lit::gt(x.neg());
+        let other = match (cb.lits()[0] == cond, cb.lits()[1] == cond) {
+            (true, false) => &cb.lits()[1],
+            (false, true) => &cb.lits()[0],
+            _ => return Err("前提 B に条件 x < 0 がない".into()),
+        };
+        if other.rel() != Rel::Ge {
+            return Err("前提 B が不等式 ≥ ではない".into());
+        }
+        // other.poly() = α·f(x) + (変数を含まない式)、α ≠ 0
+        let fx = Atom::F(std::rc::Rc::new(x.clone()));
+        let mut alpha: Option<Q> = None;
+        for (m, c) in other.poly().terms() {
+            if m.factors().len() == 1 && m.factors()[0] == (fx.clone(), 1) {
+                alpha = Some(c.clone());
+            } else if m.factors().iter().any(|(a, _)| a.has_var()) {
+                return Err("前提 B の式が f(x) の 1 次式（他は定数）ではない".into());
+            }
+        }
+        if alpha.map_or(true, |a| a.is_zero()) {
+            return Err("前提 B に f(x) がない".into());
+        }
+        let g = Poly::f(Poly::one()).sub(&f0).mul(&x).add(&f0);
+        let out = Clause::new(1, vec![Lit::eq(Poly::f(x).sub(&g))])?;
+        Ok(self.push(out, target, Rule::CauchyBounded { additive, bound }))
     }
 
     // ------------------------------------------------------------------

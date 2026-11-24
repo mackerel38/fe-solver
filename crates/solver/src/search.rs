@@ -221,6 +221,10 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            self.cauchy_step(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             let t0 = Instant::now();
             let r = self.eliminate2(st);
             self.add_time("t_elim2", t0);
@@ -950,7 +954,7 @@ impl Searcher {
         // (b)
         let cls: Vec<Fact> = st.others.iter().copied().filter(|f| {
             let c = self.e.clause(*f);
-            c.nvars() <= 1 && c.lits().len() == 2
+            c.nvars() <= 2 && c.lits().len() == 2
         }).collect();
         for i in 0..cls.len() {
             for j in (i + 1)..cls.len() {
@@ -999,6 +1003,122 @@ impl Searcher {
         Ok(())
     }
 
+    /// コーシーの方程式への帰着:
+    ///  (1) 2 変数の条件つき節「±v ⋈ 0 ∨ Q(x, y)」を (x + v, −v) で例化して反対側の符号の版を作る（符号の併合で全体へ）
+    ///  (2) f(x+y) − f(x) − f(y) − k = 0（k は閉じた式）から正準形 f(x+y) = f(x) + f(y) − f(0) を作る
+    ///  (3) f(x²) の式が「平方和 + 定数」なら f は x ≥ 0 で下に有界（または上に有界）
+    ///  (4) (2) と (3) から CauchyBounded で f(x) = (f(1) − f(0))x + f(0)
+    fn cauchy_step(&mut self, st: &mut BState) -> Res<()> {
+        let b = st.b;
+        // (1)
+        let cls: Vec<Fact> = st.others.iter().copied().filter(|f| self.e.clause(*f).nvars() == 2).collect();
+        for f in cls {
+            let c = self.e.clause(f).clone();
+            if c.lits().len() != 2 {
+                continue;
+            }
+            let cond = c.lits().iter().find(|l| matches!(l.rel(), Rel::Gt | Rel::Ge) && !l.poly().has_f());
+            let cond = match cond {
+                Some(l) => l.clone(),
+                None => continue,
+            };
+            let vs = cond.poly().vars();
+            if vs.len() != 1 {
+                continue;
+            }
+            let v = *vs.iter().next().unwrap();
+            let key = format!("cflip|{:?}", f);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let o = 1 - v;
+            let mut sub = vec![x(), y()];
+            sub[o as usize] = Poly::var(o).add(&Poly::var(v));
+            sub[v as usize] = Poly::var(v).neg();
+            let g = self.e.k.instantiate(b, f, sub, 2)?;
+            self.e.add_fact(st, g)?;
+            if self.closed(st) {
+                return Ok(());
+            }
+        }
+        // (2)
+        if st.additive.is_none() {
+            let fxy = Atom::F(std::rc::Rc::new(x().add(&y())));
+            let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+            for u in units {
+                let p = self.e.poly0(u);
+                let lam = match coeff_of_atom(&p, &fxy) {
+                    Some(l) => l,
+                    None => continue,
+                };
+                let pn = p.scale(&(Q::one() / &lam));
+                let core = Poly::f(x().add(&y())).sub(&Poly::f(x())).sub(&Poly::f(y()));
+                let k = pn.sub(&core); // = −k_orig（閉じた式であること）
+                if k.has_var() {
+                    continue;
+                }
+                let target = core.add(&Poly::f(Poly::zero()));
+                // target − pn = f(0) − k を規則で 0 と示す
+                let d = target.sub(&pn);
+                let (d2, items) = self.e.rw_poly(st, &d, 0)?;
+                if !d2.is_zero() {
+                    continue;
+                }
+                let mut its = vec![(Poly::constant(Q::one() / &lam), u, 0)];
+                // target = pn + d,  d = Σ items（d − 0 = Σ items）
+                its.extend(items);
+                let canon = self.e.k.lincomb(b, 2, its)?;
+                let want = fe_kernel::Clause::new(2, vec![Lit::eq(target.clone())]).map_err(|e| e.to_string())?;
+                if *self.e.clause(canon) == want {
+                    st.additive = Some(canon);
+                    self.bump("additive_found");
+                    break;
+                }
+            }
+        }
+        // (3)
+        if st.bound.is_none() {
+            let fx2 = Atom::F(std::rc::Rc::new(x().pow(2)));
+            let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
+            'outer: for u in units {
+                let p = self.e.poly0(u);
+                let lam = match coeff_of_atom(&p, &fx2) {
+                    Some(l) => l,
+                    None => continue,
+                };
+                let r = Poly::from_atom(fx2.clone()).sub(&p.scale(&(Q::one() / &lam)));
+                if r.top_atoms().contains(&fx2) {
+                    continue;
+                }
+                let k = Poly::from_terms(r.terms().iter().filter(|(m, _)| m.factors().iter().all(|(a, _)| !a.has_var())).cloned().collect());
+                let var_part = r.sub(&k);
+                for sign in [1i64, -1] {
+                    let sp = var_part.scale(&Q::from_integer(sign.into()));
+                    if let Some((sq, kappa)) = crate::pos::sos(&sp) {
+                        // sign·(f(x²) − k) = sign·p/λ + sign·(r − k) ≥ 0
+                        let pf = self.e.k.pos_comb(b, 1, vec![], vec![(Poly::constant(Q::from_integer(sign.into()) / &lam), u, 0)], sq, kappa, false)?;
+                        let pre_poly = Poly::from_atom(Atom::F(std::rc::Rc::new(x()))).sub(&k).scale(&Q::from_integer(sign.into()));
+                        let pc = fe_kernel::Clause::new(1, vec![Lit::ge(pre_poly)]).map_err(|e| e.to_string())?;
+                        if let Ok(bf) = self.e.k.square_range(b, pf, 0, pc) {
+                            st.bound = Some(bf);
+                            self.bump("bound_found");
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+        // (4)
+        if let (Some(a), Some(bd)) = (st.additive, st.bound) {
+            if st.tried.insert("cauchy".into()) {
+                let r = self.e.k.cauchy_bounded(b, a, bd)?;
+                self.bump("cauchy");
+                self.e.add_fact(st, r)?;
+            }
+        }
+        Ok(())
+    }
+
     /// ある変数が 2 乗の形でだけ現れる単位等式から、平方の値域（t ≥ 0）での事実を作る
     fn square_ranges(&mut self, st: &mut BState) -> Res<()> {
         let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) >= 1).collect();
@@ -1007,9 +1127,44 @@ impl Searcher {
             if !st.tried.insert(key) {
                 continue;
             }
-            let p = self.e.poly0(u);
+            let p0 = self.e.poly0(u);
             let nv = self.e.nvars(u);
+            // f(x²) − f(x)² − k = 0（k は閉じた式）型の 1 変数の事実（f(v)² を f(v²) − k に戻すのに使う）
+            let fx = Atom::F(std::rc::Rc::new(x()));
+            let fx2 = Atom::F(std::rc::Rc::new(x().pow(2)));
+            let sqfact: Option<(Fact, Q)> = st.units.iter().copied().filter(|g| self.e.nvars(*g) == 1).find_map(|g| {
+                let q = self.e.poly0(g);
+                let lam = coeff_of_atom(&q, &fx2)?;
+                let r = q.scale(&(Q::one() / &lam)).sub(&Poly::from_atom(fx2.clone())).add(&Poly::from_atom(fx.clone()).pow(2));
+                if r.has_var() { None } else { Some((g, lam)) }
+            });
             for v in 0..nv {
+                let mut u_use = u;
+                let mut p = p0.clone();
+                if crate::pos::unsquare(&p, v).is_none() {
+                    // f(v)² を f(v²) − k に置き換えて再挑戦
+                    let (g, lam) = match &sqfact {
+                        Some(t) => t.clone(),
+                        None => continue,
+                    };
+                    let fv = Atom::F(std::rc::Rc::new(Poly::var(v)));
+                    let cs = coeffs_in(&p, &fv);
+                    if cs.keys().any(|e| *e != 0 && *e != 2) || !cs.contains_key(&2) {
+                        continue;
+                    }
+                    let qco = cs[&2].clone();
+                    // g(v) の保存形 = λ(f(v²) − f(v)² − k)。p + (qco/λ)·g(v) で f(v)² が消える
+                    let mut sub: Vec<Poly> = vec![Poly::var(v)];
+                    let gi = self.e.k.instantiate(st.b, g, std::mem::take(&mut sub), nv)?;
+                    let np = p.add(&self.e.poly0(gi).scale(&(Q::one() / &lam)).mul(&qco));
+                    if crate::pos::unsquare(&np, v).is_none() {
+                        continue;
+                    }
+                    let lc = self.e.k.lincomb(st.b, nv, vec![(Poly::one(), u, 0), (qco.scale(&(Q::one() / &lam)), gi, 0)])?;
+                    u_use = lc;
+                    p = self.e.poly0(lc);
+                }
+                let u = u_use;
                 let pre = match crate::pos::unsquare(&p, v) {
                     Some(q) => q,
                     None => continue,
@@ -1168,38 +1323,8 @@ impl Searcher {
         Ok(false)
     }
 
-    /// 変数を含み f を含まない成分のリテラルを、変数への値の代入で偽にして取り除く
     fn drop_ffree_components(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
-        let c = self.e.clause(f).clone();
-        let n = c.nvars();
-        let mut s: Vec<Poly> = (0..n).map(Poly::var).collect();
-        let mut changed = false;
-        for comp in fe_kernel::kernel::components(&c) {
-            let vars: BTreeSet<u32> = comp.iter().flat_map(|l| l.poly().vars()).collect();
-            if vars.is_empty() || comp.iter().any(|l| l.poly().has_f() || l.rel() != Rel::Eq) {
-                continue;
-            }
-            // すべての変数に同じ値 v を入れて、成分のどのリテラルも 0 でない定数になる v を探す
-            'outer: for v in 1..8i64 {
-                let mut s2 = s.clone();
-                for &i in &vars {
-                    s2[i as usize] = Poly::int(v);
-                }
-                for l in &comp {
-                    match l.poly().subst_vars(&s2).as_const() {
-                        Some(q) if !q.is_zero() => {}
-                        _ => continue 'outer,
-                    }
-                }
-                s = s2;
-                changed = true;
-                break;
-            }
-        }
-        if !changed {
-            return Ok(f);
-        }
-        self.e.k.instantiate(st.b, f, s, n)
+        self.e.drop_ffree_components(st, f)
     }
 
     // ------------------------------------------------------------------

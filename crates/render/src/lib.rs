@@ -267,6 +267,7 @@ fn premises(r: &Rule) -> Vec<Fact> {
             ineqs.iter().map(|(_, f, _)| *f).chain(eqs.iter().map(|(_, f, _)| *f)).collect()
         }
         Rule::Merge { facts, .. } => facts.iter().flatten().copied().collect(),
+        Rule::CauchyBounded { additive, bound } => vec![*additive, *bound],
     }
 }
 
@@ -453,6 +454,11 @@ impl<'a> Ctx<'a> {
             ),
             Rule::InvAxiom { poly } => format!("{} ≠ 0 ならば逆数 1/({}) が存在するので", fmt_poly(poly, &n), fmt_poly(poly, &n)),
             Rule::Weaken { premise, .. } => format!("{} より特に", self.lbl(*premise)),
+            Rule::CauchyBounded { additive, bound } => format!(
+                "{} より g(x) = f(x) − f(0) は加法的、{} より g は x ≥ 0 で片側に有界なので（コーシーの方程式）",
+                self.lbl(*additive),
+                self.lbl(*bound)
+            ),
             Rule::Merge { facts, .. } => {
                 let fs: Vec<String> = facts.iter().flatten().map(|f| self.lbl(*f)).collect();
                 format!("{} より、どの場合でも成り立つので", fs.join(", "))

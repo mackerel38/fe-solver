@@ -525,3 +525,28 @@ fn piecewise_literal_falsity() {
     assert_eq!(fam.interval(1), (Some(q(0)), Some(q(0))));
     assert_eq!(fam.interval(2), (Some(q(0)), None));
 }
+
+#[test]
+fn cauchy_bounded_rule() {
+    // f(x + y) = f(x) + f(y) を例に、A と B を仮定として置く
+    let mut k = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    let f0 = f(c(0));
+    let a_cl = cl(2, vec![Lit::eq(f(x().add(&y())).sub(&f(x())).sub(&f(y())).add(&f0))]);
+    let (a0, ha, _, _, _) = k.split_em(ROOT, a_cl).unwrap();
+    let b_cl = cl(1, vec![Lit::gt(x().neg()), Lit::ge(f(x()).sub(&c(3)))]);
+    let (b0, hb, _, _, _) = k.split_em(a0, b_cl).unwrap();
+    let r = k.cauchy_bounded(b0, ha, hb).unwrap();
+    let g = f(c(1)).sub(&f0).mul(&x()).add(&f0);
+    assert_eq!(*k.clause(r), cl(1, vec![Lit::eq(f(x()).sub(&g))]));
+    // 上に有界でもよい
+    let (c0, hc, _, _, _) = k.split_em(b0, cl(1, vec![Lit::gt(x().neg()), Lit::ge(f(x()).neg().add(&f(c(2))))])).unwrap();
+    assert!(k.cauchy_bounded(c0, ha, hc).is_ok());
+    // 形の誤り: 加法性でない・条件が x > 0・x を含む境界・逆順
+    let (d0, hd, _, _, _) = k.split_em(c0, cl(1, vec![Lit::gt(x()), Lit::ge(f(x()))])).unwrap();
+    assert!(k.cauchy_bounded(d0, ha, hd).is_err());
+    let (e0, he, _, _, _) = k.split_em(d0, cl(1, vec![Lit::gt(x().neg()), Lit::ge(f(x()).sub(&x()))])).unwrap();
+    assert!(k.cauchy_bounded(e0, ha, he).is_err());
+    assert!(k.cauchy_bounded(e0, hb, ha).is_err());
+    let (g0, hg, _, _, _) = k.split_em(e0, cl(2, vec![Lit::eq(f(x().add(&y())).sub(&f(x())).sub(&f(y())))])).unwrap();
+    assert!(k.cauchy_bounded(g0, hg, hb).is_err(), "f(0) の項がない形は受け付けない");
+}

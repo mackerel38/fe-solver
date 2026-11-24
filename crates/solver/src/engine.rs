@@ -46,6 +46,9 @@ pub struct BState {
     /// 単射性の仮定「∀x,y. f(x) − f(y) ≠ 0 ∨ x − y = 0」
     pub inj: Option<Fact>,
     pub cond_rules: Vec<CondRule>,
+    /// 正準形の加法性「f(x+y) = f(x) + f(y) − f(0)」と、x ≥ 0 での有界性の事実
+    pub additive: Option<Fact>,
+    pub bound: Option<Fact>,
     /// 単位等式（正規化・簡約済み）
     pub units: Vec<Fact>,
     /// その他の節（選言・不等式など）
@@ -66,6 +69,8 @@ impl BState {
             invs: vec![],
             inj: None,
             cond_rules: vec![],
+            additive: None,
+            bound: None,
             units: vec![],
             others: vec![],
             keys: HashSet::new(),
@@ -535,6 +540,7 @@ impl Engine {
         let f = self.canon_vars(st, f)?;
         let f = self.resolve_nes(st, f)?;
         let f = self.discharge(st, f)?;
+        let f = if self.clause(f).lits().len() >= 2 { self.drop_ffree_components(st, f)? } else { f };
         let c = self.clause(f).clone();
         if c.is_false() {
             return Ok(Added::Contradiction(f));
@@ -696,6 +702,40 @@ impl Engine {
         Ok(())
     }
 
+    /// 変数を含み f を含まない成分のリテラルを、変数への値の代入で偽にして取り除く
+    pub fn drop_ffree_components(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
+        let c = self.clause(f).clone();
+        let n = c.nvars();
+        let mut s: Vec<Poly> = (0..n).map(Poly::var).collect();
+        let mut changed = false;
+        for comp in fe_kernel::kernel::components(&c) {
+            let vars: std::collections::BTreeSet<u32> = comp.iter().flat_map(|l| l.poly().vars()).collect();
+            if vars.is_empty() || comp.iter().any(|l| l.poly().has_f() || l.rel() != Rel::Eq) {
+                continue;
+            }
+            // すべての変数に同じ値 v を入れて、成分のどのリテラルも 0 でない定数になる v を探す
+            'outer: for v in 1..8i64 {
+                let mut s2 = s.clone();
+                for &i in &vars {
+                    s2[i as usize] = Poly::int(v);
+                }
+                for l in &comp {
+                    match l.poly().subst_vars(&s2).as_const() {
+                        Some(q) if !q.is_zero() => {}
+                        _ => continue 'outer,
+                    }
+                }
+                s = s2;
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            return Ok(f);
+        }
+        self.k.instantiate(st.b, f, s, n)
+    }
+
     /// 既知の閉じた ≠ 0 の事実で、選言中の等式リテラル u = 0 を取り除く
     pub fn resolve_nes(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
         let mut cur = f;
@@ -837,6 +877,11 @@ impl Engine {
         let u2 = self.canon_vars(st, u2)?;
         st.units.retain(|x| *x != u);
         st.rules.retain(|x| x.fact != u);
+        let had_pow = st.pow_rules.iter().any(|p| p.0 == u);
+        st.pow_rules.retain(|p| p.0 != u);
+        if had_pow {
+            st.cache.clear();
+        }
         let c = self.clause(u2).clone();
         if c.is_false() {
             st.others.push(u2);
@@ -856,6 +901,9 @@ impl Engine {
                 st.rules.push(r2.clone());
                 self.invalidate_cache(st, &r2);
                 return Ok(Some(r2));
+            } else if let Some((m, rhs)) = extract_power_rule(self.clause(u2)) {
+                st.pow_rules.push((u2, m, rhs));
+                st.cache.clear();
             }
         } else {
             st.others.push(u2);
@@ -883,6 +931,7 @@ impl Engine {
             }
             st.units.retain(|x| *x != u);
             st.rules.retain(|x| x.fact != u);
+            st.pow_rules.retain(|p| p.0 != u);
             let c = self.clause(u2).clone();
             if c.is_tautology() {
                 continue;
