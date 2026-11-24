@@ -34,6 +34,11 @@ pub fn solve(lhs: Poly, rhs: Poly, timeout: Duration) -> Result<SolveOutput, Str
     if let Err(m) = s.solve_root() {
         error = Some(m);
     }
+    if error.is_none() {
+        if let Err(m) = s.retry_timeouts(start + timeout) {
+            error = Some(m);
+        }
+    }
     let concl = s.e.k.conclude();
     let mut found = find_candidates(&s.e.k);
     for fam in &concl.families {

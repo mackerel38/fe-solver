@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 pub struct Searcher {
     pub e: Engine,
     pub round_budget: usize,
+    pub retry: Vec<(BState, u32)>,
     pub open: Vec<(BranchId, String)>,
     pub max_depth: u32,
     pub stats: BTreeMap<String, u64>,
@@ -106,7 +107,7 @@ pub enum Fin {
 
 impl Searcher {
     pub fn new(e: Engine) -> Searcher {
-        Searcher { e, round_budget: 0, open: vec![], max_depth: 10, stats: BTreeMap::new() }
+        Searcher { e, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new() }
     }
 
     fn add_time(&mut self, k: &str, t0: Instant) {
@@ -139,11 +140,42 @@ impl Searcher {
             Err(m) if m == TIMEOUT => {
                 if !self.e.k.is_closed(st.b) && self.e.k.branch(st.b).solution().is_none() && self.e.k.branch(st.b).children().is_empty() {
                     self.open.push((st.b, TIMEOUT.into()));
+                    // 部分的な期限で止まった葉は、あとで残り時間があれば再開する
+                    if self.retry.len() < 64 {
+                        self.retry.push((st, depth));
+                    }
                 }
                 Ok(())
             }
             Err(m) => Err(m),
         }
+    }
+
+    /// 全体の探索のあとで、時間切れで止まった葉の探索を残り時間で再開する
+    pub fn retry_timeouts(&mut self, final_deadline: Instant) -> Res<()> {
+        let mut pass = 0;
+        while !self.retry.is_empty() && pass < 3 {
+            pass += 1;
+            let items = std::mem::take(&mut self.retry);
+            let k = items.len();
+            for (i, (st, depth)) in items.into_iter().enumerate() {
+                let now = Instant::now();
+                if now >= final_deadline {
+                    return Ok(());
+                }
+                let b = st.b;
+                if self.e.k.branch(b).is_dead() || self.e.k.is_dead(b) || !self.e.k.branch(b).children().is_empty() || self.e.k.branch(b).solution().is_some() {
+                    continue;
+                }
+                let share = final_deadline.saturating_duration_since(now) / ((k - i) as u32);
+                self.e.deadline = now + share;
+                self.open.retain(|(ob, _)| *ob != b);
+                self.bump("retry");
+                self.solve_branch(st, depth)?;
+            }
+        }
+        self.e.deadline = final_deadline;
+        Ok(())
     }
 
     fn closed(&self, st: &BState) -> bool {
@@ -433,15 +465,33 @@ impl Searcher {
         if !st.tried.insert(key) {
             return Ok(false);
         }
+        // 証明を作らない事前計算で無駄とわかる代入例は省く
+        if self.e.clause(f).lits().len() == 1 {
+            let ps = self.e.poly0(f).subst_vars(&s);
+            if self.e.predict_useless(st, &ps) {
+                self.bump("inst_skipped");
+                return Ok(false);
+            }
+        }
         self.bump("instances");
         self.round_budget -= 1;
         let _ = nv;
         let nv = s.iter().flat_map(|t| t.vars()).max().map_or(0, |m| m + 1);
         let inst = self.e.k.instantiate(st.b, f, s, nv)?;
         match self.e.add_fact(st, inst)? {
-            Added::New(_) => Ok(true),
+            Added::New(_) => {
+                self.bump("inst_new");
+                Ok(true)
+            }
             Added::Contradiction(_) => Ok(true),
-            _ => Ok(false),
+            Added::Known => {
+                self.bump("inst_known");
+                Ok(false)
+            }
+            Added::Trivial => {
+                self.bump("inst_trivial");
+                Ok(false)
+            }
         }
     }
 

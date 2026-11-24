@@ -543,6 +543,56 @@ impl Engine {
         Ok(cur)
     }
 
+    /// 証明を作らずに、キャッシュ済みの正規形だけで p の正規形を予測する（キャッシュにない原子があれば None）
+    pub fn dry_normal(&self, st: &BState, p: &Poly) -> Option<Poly> {
+        let mut out = Poly::zero();
+        for (m, c) in p.terms() {
+            let mut t = Poly::constant(c.clone());
+            for (a, e) in m.factors() {
+                let r = match a {
+                    Atom::Var(_) => Poly::from_atom(a.clone()),
+                    _ => match st.cache.get(a)? {
+                        Some((r, _)) => r.clone(),
+                        None => Poly::from_atom(a.clone()),
+                    },
+                };
+                t = t.mul(&r.pow(*e));
+            }
+            out = out.add(&t);
+        }
+        for (_, pm, rhs) in &st.pow_rules {
+            out = reduce_mono(&out, pm, rhs).0;
+        }
+        Some(out)
+    }
+
+    /// 事前計算で、代入例が自明・既知・大きすぎるとわかるなら true（このとき検証核は呼ばない）
+    pub fn predict_useless(&self, st: &BState, p: &Poly) -> bool {
+        let q = match self.dry_normal(st, p) {
+            Some(q) => q,
+            None => return false,
+        };
+        if q.is_zero() || q.as_const().is_some() && q.as_const() != Some(Q::zero()) && false {
+            return true;
+        }
+        if q.as_const().is_some() {
+            return false; // 0 でない定数は矛盾（有用）
+        }
+        if crate::order::poly_size(&q) > self.size_cap && q.has_var() {
+            return true;
+        }
+        let used: Vec<u32> = q.vars().into_iter().collect();
+        let mut sb = vec![Poly::zero(); used.last().map_or(0, |m| *m as usize + 1)];
+        for (j, &v) in used.iter().enumerate() {
+            sb[v as usize] = Poly::var(j as u32);
+        }
+        let q2 = q.subst_vars(&sb);
+        match Clause::new(used.len() as u32, vec![Lit::eq(q2)]) {
+            Ok(c) => st.keys.contains(&Self::clause_key(&c)),
+            Err(_) => false,
+        }
+    }
+
     /// 使われている変数を 0..k に詰める
     pub fn canon_vars(&mut self, st: &BState, f: Fact) -> Res<Fact> {
         let c = self.clause(f).clone();
