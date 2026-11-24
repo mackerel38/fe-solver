@@ -180,6 +180,13 @@ impl Searcher {
             if round == 2 && depth <= 2 && std::env::var("FE_NO_INJ").is_err() && self.try_injectivity(st, depth)? {
                 return Ok(());
             }
+            if depth < self.max_depth && self.solution_rule(st).is_none() && self.pointwise_split(st, depth)? {
+                return Ok(());
+            }
+            self.pointwise_instances(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             if st.inj.is_some() {
                 self.apply_injectivity(st)?;
                 if self.closed(st) {
@@ -451,8 +458,14 @@ impl Searcher {
                 return Ok(());
             }
             // 特別な点での代入
-            for sp in &specials {
-                for (a, bb) in [(x(), sp.clone()), (sp.clone(), x()), (sp.clone(), sp.clone()), (Poly::zero(), sp.clone()), (sp.clone(), Poly::zero())] {
+            for (i1, sp) in specials.iter().enumerate() {
+                let mut pairs = vec![(x(), sp.clone()), (sp.clone(), x()), (sp.clone(), sp.clone()), (Poly::zero(), sp.clone()), (sp.clone(), Poly::zero())];
+                for (i2, sp2) in specials.iter().enumerate() {
+                    if i1 != i2 {
+                        pairs.push((sp.clone(), sp2.clone()));
+                    }
+                }
+                for (a, bb) in pairs {
                     if self.closed(st) || !st.units.contains(&g) {
                         break;
                     }
@@ -713,6 +726,123 @@ impl Searcher {
             }
             if self.closed(st) {
                 return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// 各点ごとの選言 ∀x. f(x) = g₁(x) ∨ … ∨ f(x) = g_k(x)（g_i は x の f を含まない）を探す
+    fn pointwise_clauses(&self, st: &BState) -> Vec<(Fact, Vec<Poly>)> {
+        let fx = Atom::F(std::rc::Rc::new(x()));
+        let mut out = Vec::new();
+        for &f in &st.others {
+            let c = self.e.clause(f);
+            if c.nvars() != 1 || c.lits().len() < 2 || c.lits().iter().any(|l| l.rel() != Rel::Eq) {
+                continue;
+            }
+            let mut gs = Vec::new();
+            for l in c.lits() {
+                let p = l.poly();
+                let cf = match coeff_of_atom(p, &fx) {
+                    Some(c) => c,
+                    None => break,
+                };
+                let g = Poly::f(x()).sub(&p.scale(&(Q::one() / cf)));
+                if !f_atoms_with_vars(&g).is_empty() || g.top_atoms().contains(&fx) {
+                    break;
+                }
+                gs.push(g);
+            }
+            if gs.len() == c.lits().len() {
+                out.push((f, gs));
+            }
+        }
+        out
+    }
+
+    /// 各点ごとの選言を、候補ごとの排中律で全体の場合に分ける（各点→全体の推論を正しく行う）
+    fn pointwise_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        let pcs = self.pointwise_clauses(st);
+        for (cf, gs) in pcs {
+            let remaining: Vec<Poly> = gs.iter().filter(|g| !st.tried.contains(&format!("pwx|{:x}", hash_poly(g)))).cloned().collect();
+            if remaining.is_empty() {
+                continue;
+            }
+            let g = remaining[0].clone();
+            let key = format!("pws|{:x}", hash_poly(&g));
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let c = fe_kernel::Clause::new(1, vec![Lit::eq(Poly::f(x()).sub(&g))]).map_err(|e| e.to_string())?;
+            let (c0, h0, c1, hs, consts) = self.e.k.split_em(st.b, c)?;
+            self.bump("pointwise_split");
+            let saved = self.e.deadline;
+            let now = Instant::now();
+            let remain = saved.saturating_duration_since(now);
+            // 子 0（f = g）
+            self.e.deadline = now + remain / 3;
+            let mut s0 = st.child(c0);
+            match self.e.add_fact(&mut s0, h0) {
+                Ok(_) => self.solve_branch(s0, depth + 1)?,
+                Err(m) if m == TIMEOUT => self.open.push((c0, TIMEOUT.into())),
+                Err(m) => return Err(m),
+            }
+            // 子 1（ある a で f(a) ≠ g(a)）
+            self.e.deadline = saved;
+            let mut s1 = st.child(c1);
+            s1.tried.insert(format!("pwx|{:x}", hash_poly(&g)));
+            let r = (|| -> Res<()> {
+                for h in &hs {
+                    self.e.add_fact(&mut s1, *h)?;
+                }
+                let a = Poly::cnst(consts[0]);
+                let inst = self.e.k.instantiate(c1, cf, vec![a], 0)?;
+                self.e.add_fact(&mut s1, inst)?;
+                Ok(())
+            })();
+            match r {
+                Ok(()) => self.solve_branch(s1, depth + 1)?,
+                Err(m) if m == TIMEOUT => self.open.push((c1, TIMEOUT.into())),
+                Err(m) => return Err(m),
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// 各点ごとの選言を、事実に現れる閉じた点 K（定数を含む f の引数）で例化する（閉じた選言 → 場合分け）
+    fn pointwise_instances(&mut self, st: &mut BState) -> Res<()> {
+        let pcs = self.pointwise_clauses(st);
+        if pcs.is_empty() {
+            return Ok(());
+        }
+        let mut points: Vec<Poly> = Vec::new();
+        for &u in &st.units {
+            let p = self.e.poly0(u);
+            p.visit_atoms(&mut |a| {
+                if let Atom::F(k) = a {
+                    if !k.has_var() && !k.consts().is_empty() && !k.has_f() && !points.contains(k) {
+                        points.push((**k).clone());
+                    }
+                }
+            });
+        }
+        points.sort_by_key(|k| poly_size(k));
+        points.truncate(16);
+        let mut made = 0;
+        for (cf, _) in pcs {
+            for k in &points {
+                if made >= 10 || self.closed(st) {
+                    return Ok(());
+                }
+                let key = format!("pwi|{:?}|{:x}", cf, hash_poly(k));
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let inst = self.e.k.instantiate(st.b, cf, vec![k.clone()], 0)?;
+                self.bump("pointwise_inst");
+                self.e.add_fact(st, inst)?;
+                made += 1;
             }
         }
         Ok(())
@@ -1203,6 +1333,30 @@ impl Searcher {
 
     /// 閉じた（変数のない）事実の因数分解による場合分け。分けたら true。
     fn try_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        // 閉じた選言（変数のない節）はそのまま場合分けする
+        let closed_disj: Vec<Fact> = st.others.iter().copied().filter(|f| {
+            let c = self.e.clause(*f);
+            c.nvars() == 0 && c.lits().len() >= 2
+        }).collect();
+        for f in closed_disj {
+            let key = format!("csplit|{:?}", f);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let f2 = self.drop_rootless(st, f)?;
+            let n = self.e.clause(f2).lits().len();
+            if n == 0 {
+                return Ok(true);
+            }
+            if n == 1 {
+                self.e.add_fact(st, f2)?;
+                continue;
+            }
+            self.bump("split");
+            let children = self.e.k.split_components(st.b, f2)?;
+            self.run_children(st, children, depth)?;
+            return Ok(true);
+        }
         let closed: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 0).collect();
         for f in closed {
             let key = format!("split|{:x}", hash_clause(self.e.clause(f)));
@@ -1724,5 +1878,12 @@ fn hash_clause(c: &fe_kernel::Clause) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     c.hash(&mut h);
+    h.finish()
+}
+
+fn hash_poly(p: &Poly) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    p.hash(&mut h);
     h.finish()
 }

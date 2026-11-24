@@ -436,11 +436,30 @@ impl Engine {
                 Rel::Gt | Rel::Ge => {
                     self.k.pos_comb(b, n, vec![(Q::one(), cur, i)], neg_items, vec![], Q::zero(), l.rel() == Rel::Gt)?
                 }
+                Rel::Ne if p2.is_zero() => {
+                    // p は 0 に書き換わる: p = Σ items から「p = 0」を作り、p ≠ 0 を導出原理で消す
+                    let lc = self.k.lincomb(b, n, items.clone())?;
+                    let want = Lit::eq(l.poly().clone());
+                    match self.clause(lc).lits().iter().position(|x| *x == want) {
+                        Some(li) => self.k.resolve(b, lc, li, cur, i)?,
+                        None => {
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
+                Rel::Ne if p2.as_const().is_some() => {
+                    // 0 でない定数 ≠ 0 は真: この節は自明に成り立つので書き換えない
+                    i += 1;
+                    continue;
+                }
                 Rel::Ne => {
                     // p' = 0 ∨ p' ≠ 0 から p = 0 ∨ p' ≠ 0 を作り、p ≠ 0 ∨ S と導出
                     let em = self.k.eq_or_ne(b, n, p2.clone())?;
                     let ei = self.clause(em).lits().iter().position(|x| x.rel() == Rel::Eq).ok_or("EqOrNe")?;
-                    let mut its = vec![(Poly::one(), em, ei)];
+                    // 保存形 = λ·p2 なので係数 1/λ で p2 を作る
+                    let lam = lead_ratio(self.clause(em).lits()[ei].poly(), &p2).ok_or("EqOrNe の倍率")?;
+                    let mut its = vec![(Poly::constant(Q::one() / lam), em, ei)];
                     its.extend(items.iter().cloned());
                     let lc = self.k.lincomb(b, n, its)?;
                     let want = Lit::eq(l.poly().clone());
@@ -638,6 +657,39 @@ impl Engine {
                 }
                 if let Some(r2) = self.resimplify_unit(st, u)? {
                     queue.push(r2);
+                }
+            }
+            // ≠ の事実や選言も簡約し直す（矛盾の検出・場合分けの候補の更新のため）
+            let others = st.others.clone();
+            for o in others {
+                self.check_time()?;
+                if !st.others.contains(&o) || !self.reducible_by(o, &newr) {
+                    continue;
+                }
+                let o2 = self.rewrite_clause(st, o)?;
+                if o2 == o {
+                    continue;
+                }
+                let o2 = self.resolve_nes(st, o2)?;
+                let o2 = self.discharge(st, o2)?;
+                st.others.retain(|x| *x != o);
+                st.nes.retain(|x| *x != o);
+                st.cond_rules.retain(|x| x.fact != o);
+                let c = self.clause(o2).clone();
+                if c.is_tautology() {
+                    continue;
+                }
+                if c.lits().len() == 1 && c.lits()[0].rel() == Rel::Eq {
+                    // 選言が単位等式になった: 規則として入れる（再帰は深さ制限つき）
+                    self.add_fact(st, o2)?;
+                    continue;
+                }
+                st.others.push(o2);
+                if c.nvars() == 0 && c.lits().len() == 1 && c.lits()[0].rel() == Rel::Ne {
+                    st.nes.push(o2);
+                }
+                if let Some(cr) = self.extract_cond_rule(o2) {
+                    st.cond_rules.push(cr);
                 }
             }
         }
