@@ -106,7 +106,7 @@ pub enum Fin {
 
 impl Searcher {
     pub fn new(e: Engine) -> Searcher {
-        Searcher { e, round_budget: 0, open: vec![], max_depth: 6, stats: BTreeMap::new() }
+        Searcher { e, round_budget: 0, open: vec![], max_depth: 10, stats: BTreeMap::new() }
     }
 
     fn add_time(&mut self, k: &str, t0: Instant) {
@@ -183,7 +183,7 @@ impl Searcher {
             if depth < self.max_depth && self.solution_rule(st).is_none() && self.pointwise_split(st, depth)? {
                 return Ok(());
             }
-            if depth < self.max_depth && self.solution_rule(st).is_none() && self.coef_split(st, depth)? {
+            if depth < 3 && self.solution_rule(st).is_none() && self.coef_split(st, depth)? {
                 return Ok(());
             }
             self.pointwise_instances(st)?;
@@ -556,6 +556,8 @@ impl Searcher {
                 pool.push(x().pow(2));
                 pool.push(x().pow(2).neg());
                 pool.push(Poly::int(-1));
+                pool.push(x().add(&Poly::one()));
+                pool.push(x().sub(&Poly::one()));
             }
             let all_ones: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
             for f in all_ones {
@@ -1555,6 +1557,12 @@ impl Searcher {
                 eprintln!("finalize b{}: rule {} -> {} ; E = {}", st.b.0, rule.lhs, rule.rhs, c);
                 for r in &st.rules {
                     if r.nvars <= 1 { eprintln!("    rule {} -> {}", r.lhs, r.rhs); }
+                }
+                for (_, m, r) in &st.pow_rules {
+                    eprintln!("    mono {} -> {}", m, r);
+                }
+                for u in &st.units {
+                    if self.e.nvars(*u) == 0 { eprintln!("    closed {}", self.e.clause(*u)); }
                 }
             }
             if c.is_false() {

@@ -206,6 +206,9 @@ impl Engine {
         } else if !st.cond_rules.is_empty() && self.rewrite_budget > 0 {
             inst_rhs = self.apply_cond_rules(st, &cur_atom, n)?;
         }
+        if inst_rhs.is_none() && st.additive.is_some() && self.rewrite_budget > 0 {
+            inst_rhs = self.additive_expand(st, &cur_atom, n)?;
+        }
         if let Some((inst, rhs)) = inst_rhs {
             let lam = coeff_of_atom(&self.poly0(inst), &cur_atom).ok_or("例化の結果に原子がない")?;
             items.push((Poly::constant(Q::one() / lam), inst, 0));
@@ -235,6 +238,53 @@ impl Engine {
             return Err(format!("書き換えの結果が想定と違う: {} vs {}", p, want));
         }
         Ok(Some((cur, f)))
+    }
+
+    /// 加法性（正準形 f(x+y) = f(x) + f(y) − f(0)）による展開:
+    ///  f(t₁ + 残り) → f(t₁) + f(残り) − f(0)、f(c·m)（c は 2 以上の整数）→ f(m) + f((c−1)m) − f(0)、f(−m) → 2f(0) − f(m)
+    fn additive_expand(&mut self, st: &mut BState, a: &Atom, n: u32) -> Res<Option<(Fact, Poly)>> {
+        let add = match st.additive {
+            Some(f) => f,
+            None => return Ok(None),
+        };
+        let u = match a {
+            Atom::F(u) => (**u).clone(),
+            _ => return Ok(None),
+        };
+        if u.terms().len() == 0 {
+            return Ok(None);
+        }
+        let (s1, s2) = if u.terms().len() >= 2 {
+            let t1 = Poly::mono(u.terms()[0].0.clone(), u.terms()[0].1.clone());
+            (t1.clone(), u.sub(&t1))
+        } else {
+            let (m, c) = &u.terms()[0];
+            if m.is_one() || !c.is_integer() || c.is_one() {
+                return Ok(None);
+            }
+            let mp = Poly::mono(m.clone(), Q::one());
+            if *c == -Q::one() {
+                (mp.clone(), mp.neg())
+            } else if *c > Q::one() {
+                (mp.clone(), mp.scale(&(c - Q::one())))
+            } else {
+                // c ≤ −2: f(c·m) = f(−m) + f((c+1)·m) − f(0)
+                (mp.neg(), mp.scale(&(c + Q::one())))
+            }
+        };
+        self.rewrite_budget = self.rewrite_budget.saturating_sub(1);
+        let inst = self.k.instantiate(st.b, add, vec![s1.clone(), s2.clone()], n)?;
+        let p = self.poly0(inst);
+        // p = λ(f(s1+s2) − f(s1) − f(s2) + f(0))。s1 + s2 = 0 のときは f(0) − f(m) − f(−m) + f(0)
+        let lam = match coeff_of_atom(&p, a) {
+            Some(l) => l,
+            None => return Ok(None),
+        };
+        let rhs = Poly::from_atom(a.clone()).sub(&p.scale(&(Q::one() / lam)));
+        if !all_atoms_less(&rhs, a) || rhs.top_atoms().contains(a) {
+            return Ok(None);
+        }
+        Ok(Some((inst, rhs)))
     }
 
     /// 条件付き規則を原子 a に適用する。条件の否定を平方和で示せたときだけ、単位等式「a − rhs = 0」を作る。
@@ -816,6 +866,9 @@ impl Engine {
         let rhs = Poly::mono(lm.clone(), lc.clone()).sub(&e).scale(&(Q::one() / lc));
         st.pow_rules.push((r, lm, rhs));
         st.invs.push((u.clone(), iu));
+        // 単位等式としても持つ（後の規則で相互簡約され、f(1)² = 1 のような制約が表に出るように）
+        st.keys.insert(Self::clause_key(self.clause(r)));
+        st.units.push(r);
         st.cache.clear();
         Ok(())
     }

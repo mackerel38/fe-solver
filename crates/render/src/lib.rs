@@ -98,11 +98,13 @@ fn fmt_atom(a: &Atom, n: &Names) -> String {
 
 fn fmt_mono(m: &Mono, n: &Names) -> String {
     // 変数・定数を先に、f(...) を後に（xf(y) のような慣習的な表記）
-    let mut parts: Vec<(u32, String)> = Vec::new();
+    let mut parts: Vec<(i32, String)> = Vec::new();
     for (a, e) in m.factors() {
+        let is_param = n.param.map_or(false, |pf| pf(a).is_some());
         let s = fmt_atom(a, n);
         let s = if *e == 1 { s } else { format!("{}^{}", s, e) };
         let key = match a {
+            _ if is_param => -1,
             Atom::Var(_) => 0,
             Atom::Const(_) => 1,
             Atom::Inv(_) => 2,
