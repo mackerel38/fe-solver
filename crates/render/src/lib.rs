@@ -326,12 +326,13 @@ impl<'a> Ctx<'a> {
             let args: Vec<String> = subst.iter().map(|t| fmt_poly(t, &n)).collect();
             return format!("P({})", args.join(", "));
         }
+        let used: BTreeSet<u32> = prem.lits().iter().flat_map(|l| l.poly().vars()).collect();
         let mut parts = Vec::new();
         for (i, t) in subst.iter().enumerate() {
             if i as u32 >= prem.nvars() {
                 break;
             }
-            if *t == Poly::var(i as u32) {
+            if *t == Poly::var(i as u32) || !used.contains(&(i as u32)) {
                 continue;
             }
             parts.push(format!("{} → {}", var_name(i as u32), fmt_poly(t, &n)));
@@ -467,13 +468,11 @@ impl<'a> Ctx<'a> {
                 let mut targets = BTreeSet::new();
                 for &i in &used {
                     let t = subst.get(i as usize)?;
-                    let vs = t.vars();
-                    if vs.len() != 1 || *t != Poly::var(*vs.iter().next().unwrap()) {
+                    // 変数名が変わらない（恒等的な）代入だけを省略する。名前が変わると前提の文と食い違うため
+                    if *t != Poly::var(i) {
                         return None;
                     }
-                    if !targets.insert(vs.into_iter().next().unwrap()) {
-                        return None;
-                    }
+                    targets.insert(i);
                 }
                 if rec.clause().lits().len() == pc.lits().len() {
                     Some(*premise)
