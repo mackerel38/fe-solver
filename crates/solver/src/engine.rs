@@ -491,9 +491,7 @@ impl Engine {
         if c.nvars() == 2 {
             let sw: Vec<Lit> = c.lits().iter().map(|l| Lit::new(swap_xy(l.poly()), l.rel())).collect();
             let c2 = Clause::new(2, sw).unwrap();
-            let a = format!("{:?}", c);
-            let b = format!("{:?}", c2);
-            if b < a {
+            if c2.lits() < c.lits() {
                 return c2;
             }
         }

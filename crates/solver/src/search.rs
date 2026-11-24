@@ -210,6 +210,10 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            self.sign_merge(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             let t0 = Instant::now();
             let r = self.eliminate2(st);
             self.add_time("t_elim2", t0);
@@ -402,7 +406,13 @@ impl Searcher {
         if self.solution_rule(st).is_some() || self.round_budget == 0 {
             return Ok(false);
         }
-        let key = format!("{:?}|{:?}", f, s);
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            f.hash(&mut h);
+            s.hash(&mut h);
+            format!("i{:x}", h.finish())
+        };
         if !st.tried.insert(key) {
             return Ok(false);
         }
@@ -508,6 +518,7 @@ impl Searcher {
             if round >= 2 {
                 pool.push(Poly::f(x()));
                 pool.push(x().pow(2));
+                pool.push(x().pow(2).neg());
                 pool.push(Poly::int(-1));
             }
             for f in ones {
@@ -707,6 +718,84 @@ impl Searcher {
         Ok(())
     }
 
+    /// 符号の条件つきの 1 変数の節を扱う:
+    ///  (a) 「x < 0 ∨ Q(x)」の x → −x 版「x > 0 ∨ Q(−x)」を作る
+    ///  (b) 「p > 0 ∨ Q」と「−p ⋈ 0 ∨ Q」（同じ Q）から Q を導く（非負結合で 0 > 0 となり条件が両立しない）
+    fn sign_merge(&mut self, st: &mut BState) -> Res<()> {
+        let cls: Vec<Fact> = st.others.iter().copied().filter(|f| {
+            let c = self.e.clause(*f);
+            c.nvars() == 1 && c.lits().len() == 2
+        }).collect();
+        // (a)
+        for f in &cls {
+            let c = self.e.clause(*f).clone();
+            let has_cond = c.lits().iter().any(|l| matches!(l.rel(), Rel::Gt | Rel::Ge) && !l.poly().has_f() && l.poly().has_var());
+            let has_eq = c.lits().iter().any(|l| l.rel() == Rel::Eq && l.poly().has_f());
+            if !(has_cond && has_eq) {
+                continue;
+            }
+            let key = format!("neg|{:?}", f);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let g = self.e.k.instantiate(st.b, *f, vec![x().neg()], 1)?;
+            self.e.add_fact(st, g)?;
+            if self.closed(st) {
+                return Ok(());
+            }
+        }
+        // (b)
+        let cls: Vec<Fact> = st.others.iter().copied().filter(|f| {
+            let c = self.e.clause(*f);
+            c.nvars() <= 1 && c.lits().len() == 2
+        }).collect();
+        for i in 0..cls.len() {
+            for j in (i + 1)..cls.len() {
+                let (a, b) = (cls[i], cls[j]);
+                let (ca, cb) = (self.e.clause(a).clone(), self.e.clause(b).clone());
+                for ia in 0..2 {
+                    for ib in 0..2 {
+                        let (la, lb) = (&ca.lits()[ia], &cb.lits()[ib]);
+                        let (qa, qb) = (&ca.lits()[1 - ia], &cb.lits()[1 - ib]);
+                        if qa != qb || !matches!(la.rel(), Rel::Gt | Rel::Ge) || !matches!(lb.rel(), Rel::Gt | Rel::Ge) {
+                            continue;
+                        }
+                        if la.rel() == Rel::Ge && lb.rel() == Rel::Ge {
+                            continue;
+                        }
+                        // la.poly · α + lb.poly · β = 0 となる正の α, β
+                        let pa = la.poly();
+                        let pb = lb.poly();
+                        let (ma, ca0) = match pa.terms().last() {
+                            Some(t) => t.clone(),
+                            None => continue,
+                        };
+                        let cb0 = match pb.terms().iter().find(|(m, _)| *m == ma) {
+                            Some((_, c)) => c.clone(),
+                            None => continue,
+                        };
+                        let ratio = -(&ca0 / &cb0);
+                        if ratio <= Q::zero() || !pa.add(&pb.scale(&ratio)).is_zero() {
+                            continue;
+                        }
+                        let key = format!("smerge|{:?}|{:?}", a, b);
+                        if !st.tried.insert(key) {
+                            continue;
+                        }
+                        let nv = ca.nvars().max(cb.nvars());
+                        let r = self.e.k.pos_comb(st.b, nv, vec![(Q::one(), a, ia), (ratio, b, ib)], vec![], vec![], Q::zero(), true)?;
+                        self.bump("sign_merge");
+                        self.e.add_fact(st, r)?;
+                        if self.closed(st) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// ある変数が 2 乗の形でだけ現れる単位等式から、平方の値域（t ≥ 0）での事実を作る
     fn square_ranges(&mut self, st: &mut BState) -> Res<()> {
         let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) >= 1).collect();
@@ -845,7 +934,7 @@ impl Searcher {
     fn split_disjoint(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
         let twos: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
         for f in twos {
-            let key = format!("dsplit|{:?}", self.e.clause(f));
+            let key = format!("dsplit|{:x}", hash_clause(self.e.clause(f)));
             if st.tried.contains(&key) {
                 continue;
             }
@@ -1116,7 +1205,7 @@ impl Searcher {
     fn try_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
         let closed: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 0).collect();
         for f in closed {
-            let key = format!("split|{:?}", self.e.clause(f));
+            let key = format!("split|{:x}", hash_clause(self.e.clause(f)));
             if st.tried.contains(&key) {
                 continue;
             }
@@ -1629,4 +1718,11 @@ fn linear_in_closed(u: &Poly, v: u32) -> Option<(Poly, Poly)> {
         }
     }
     Some((c, w))
+}
+
+fn hash_clause(c: &fe_kernel::Clause) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    c.hash(&mut h);
+    h.finish()
 }
