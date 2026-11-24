@@ -27,8 +27,12 @@ pub struct RwRule {
 pub struct BState {
     pub b: BranchId,
     pub rules: Vec<RwRule>,
-    /// 閉じた原子のべきの規則 a^k → rhs（rhs は a の次数 < k）
-    pub pow_rules: Vec<(Fact, Atom, u32, Poly)>,
+    /// 閉じた単項式の規則 m → rhs（a^k → a の次数 < k の式、f(j)·inv(f(j)) → 1 など）
+    pub pow_rules: Vec<(Fact, fe_kernel::Mono, Poly)>,
+    /// 閉じた ≠ 0 の事実
+    pub nes: Vec<Fact>,
+    /// 逆数のわかっている閉じた式 (u, inv(u))
+    pub invs: Vec<(Poly, Poly)>,
     /// 単位等式（正規化・簡約済み）
     pub units: Vec<Fact>,
     /// その他の節（選言・不等式など）
@@ -45,6 +49,8 @@ impl BState {
             b,
             rules: vec![],
             pow_rules: vec![],
+            nes: vec![],
+            invs: vec![],
             units: vec![],
             others: vec![],
             keys: HashSet::new(),
@@ -213,14 +219,14 @@ impl Engine {
         // べきの規則 a^k → rhs
         for _ in 0..8 {
             let mut changed = false;
-            for (pf, pa, k, rhs) in st.pow_rules.clone() {
-                let (cur2, q) = reduce_power(&cur, &pa, k, &rhs);
+            for (pf, pm, rhs) in st.pow_rules.clone() {
+                let (cur2, q) = reduce_mono(&cur, &pm, &rhs);
                 if q.is_zero() {
                     continue;
                 }
-                // 保存形 = λ (a^k − rhs)
+                // 保存形 = λ (m − rhs)
                 let stored = self.poly0(pf);
-                let target = Poly::from_atom(pa.clone()).pow(k).sub(&rhs);
+                let target = Poly::mono(pm.clone(), Q::one()).sub(&rhs);
                 let lam = lead_ratio(&stored, &target).ok_or("べき規則の保存形")?;
                 items.push((q.scale(&(Q::one() / lam)), pf, 0));
                 cur = cur2;
@@ -347,6 +353,7 @@ impl Engine {
         let f = self.canon_vars(st, f)?;
         let f = self.rewrite_clause(st, f)?;
         let f = self.canon_vars(st, f)?;
+        let f = self.resolve_nes(st, f)?;
         let c = self.clause(f).clone();
         if c.is_false() {
             return Ok(Added::Contradiction(f));
@@ -373,14 +380,21 @@ impl Engine {
                 }
             }
             st.units.push(f);
+            if std::env::var("FE_DEBUG").is_ok() && c.nvars() == 0 {
+                eprintln!("add closed unit b{}: {}  rule={:?}", st.b.0, c, self.extract_rule(f).map(|r| r.lhs.to_string()));
+            }
             if let Some(r) = self.extract_rule(f) {
                 self.install_rule(st, r)?;
-            } else if let Some((a, k, rhs)) = extract_power_rule(self.clause(f)) {
-                st.pow_rules.push((f, a, k, rhs));
+            } else if let Some((m, rhs)) = extract_power_rule(self.clause(f)) {
+                st.pow_rules.push((f, m, rhs));
                 st.cache.clear();
                 self.reduce_all(st)?;
             }
         } else {
+            if c.nvars() == 0 && c.lits().len() == 1 && c.lits()[0].rel() == Rel::Ne {
+                st.nes.push(f);
+                self.make_inverse(st, f)?;
+            }
             st.others.push(f);
         }
         Ok(Added::New(f))
@@ -461,6 +475,54 @@ impl Engine {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// 既知の閉じた ≠ 0 の事実で、選言中の等式リテラル u = 0 を取り除く
+    pub fn resolve_nes(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
+        let mut cur = f;
+        loop {
+            let c = self.clause(cur).clone();
+            if c.lits().len() < 2 {
+                return Ok(cur);
+            }
+            let mut hit = None;
+            'outer: for (i, l) in c.lits().iter().enumerate() {
+                if l.rel() != Rel::Eq || l.poly().has_var() {
+                    continue;
+                }
+                for &ne in &st.nes {
+                    if self.clause(ne).lits()[0] == l.negate() {
+                        hit = Some((i, ne));
+                        break 'outer;
+                    }
+                }
+            }
+            match hit {
+                Some((i, ne)) => cur = self.k.resolve(st.b, cur, i, ne, 0)?,
+                None => return Ok(cur),
+            }
+        }
+    }
+
+    /// 閉じた u ≠ 0 から u·inv(u) = 1 を作り、単項式の規則として登録する（u が単一の原子のとき）
+    fn make_inverse(&mut self, st: &mut BState, ne: Fact) -> Res<()> {
+        let u = self.poly0(ne);
+        if u.terms().len() != 1 || !u.terms()[0].1.is_one() || u.terms()[0].0.factors().len() != 1 || u.terms()[0].0.factors()[0].1 != 1 {
+            return Ok(());
+        }
+        if st.invs.iter().any(|(v, _)| *v == u) {
+            return Ok(());
+        }
+        let ax = self.k.inv_axiom(st.b, 0, u.clone())?;
+        let i = self.clause(ax).lits().iter().position(|l| *l == Lit::eq(u.clone())).ok_or("inv")?;
+        let r = self.k.resolve(st.b, ax, i, ne, 0)?;
+        let m = u.mul(&Poly::inv(u.clone()));
+        if m.terms().len() != 1 {
+            return Ok(());
+        }
+        st.pow_rules.push((r, m.terms()[0].0.clone(), Poly::one()));
+        st.invs.push((u.clone(), Poly::inv(u)));
         Ok(())
     }
 
@@ -639,7 +701,7 @@ pub fn coeff_of_atom(p: &Poly, a: &Atom) -> Option<Q> {
 }
 
 /// 閉じた単位等式 c·a^k + (a の次数 < k の項) = 0 から a^k → rhs を作る（k ≥ 2, a は最大の原子）
-pub fn extract_power_rule(c: &Clause) -> Option<(Atom, u32, Poly)> {
+pub fn extract_power_rule(c: &Clause) -> Option<(fe_kernel::Mono, Poly)> {
     if c.nvars() != 0 || c.lits().len() != 1 || c.lits()[0].rel() != Rel::Eq {
         return None;
     }
@@ -653,30 +715,26 @@ pub fn extract_power_rule(c: &Clause) -> Option<(Atom, u32, Poly)> {
     let lc = cs.get(&k)?.as_const()?;
     let rest = p.sub(&Poly::from_atom(a.clone()).pow(k).scale(&lc));
     let rhs = rest.scale(&(-Q::one() / lc));
-    Some((a, k, rhs))
+    let m = Poly::from_atom(a).pow(k).terms()[0].0.clone();
+    Some((m, rhs))
 }
 
-/// p の中の a^e (e ≥ k) を a^(e−k)·rhs に置き換える。p − p' = q·(a^k − rhs)
-pub fn reduce_power(p: &Poly, a: &Atom, k: u32, rhs: &Poly) -> (Poly, Poly) {
+/// p の中で単項式 m で割り切れる項を m → rhs で置き換える。p − p' = q·(m − rhs)
+pub fn reduce_mono(p: &Poly, m: &fe_kernel::Mono, rhs: &Poly) -> (Poly, Poly) {
     let mut cur = p.clone();
     let mut q = Poly::zero();
-    let ap = Poly::from_atom(a.clone());
-    let ak = ap.pow(k);
+    let mp = Poly::mono(m.clone(), Q::one());
     for _ in 0..32 {
-        // a の次数が k 以上の項を 1 段下げる
-        let mut hi = Poly::zero();
-        for (m, c) in cur.terms() {
-            let e = m.factors().iter().find(|(b, _)| b == a).map(|(_, e)| *e).unwrap_or(0);
-            if e >= k {
-                hi = hi.add(&Poly::mono(m.clone(), c.clone()));
+        let mut s = Poly::zero();
+        for (tm, c) in cur.terms() {
+            if let Some(rest) = tm.div(m) {
+                s = s.add(&Poly::mono(rest, c.clone()));
             }
         }
-        if hi.is_zero() {
+        if s.is_zero() {
             break;
         }
-        // hi = s·a^k
-        let s = crate::polyutil::div_mono(&hi, &Poly::from_atom(a.clone()).pow(k).terms()[0].0);
-        cur = cur.sub(&s.mul(&ak.sub(rhs)));
+        cur = cur.sub(&s.mul(&mp.sub(rhs)));
         q = q.add(&s);
     }
     (cur, q)

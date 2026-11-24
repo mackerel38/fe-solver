@@ -174,6 +174,9 @@ impl Searcher {
                     return Ok(());
                 }
             }
+            if round == 1 && depth < self.max_depth && self.zero_split(st, depth)? {
+                return Ok(());
+            }
             let before = st.units.len() + st.others.len();
             let t0 = Instant::now();
             let r = self.instances(st, round);
@@ -227,6 +230,61 @@ impl Searcher {
         Ok(())
     }
 
+    /// f ≡ 0 が解なら「∀x. f(x) = 0」か「ある j で f(j) ≠ 0」かで場合を分ける（排中律）
+    fn zero_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        if st.tried.contains("zero_split") {
+            return Ok(false);
+        }
+        st.tried.insert("zero_split".into());
+        if self.e.k.verify_solution(&Poly::zero()).is_err() {
+            return Ok(false);
+        }
+        let c = fe_kernel::Clause::new(1, vec![Lit::eq(Poly::f(x()))]).map_err(|e| e.to_string())?;
+        self.bump("zero_split");
+        let (c0, h0, c1, hs, _consts) = self.e.k.split_em(st.b, c)?;
+        let children = vec![(c0, h0), (c1, hs[0])];
+        self.run_children(st, children, depth)?;
+        Ok(true)
+    }
+
+    /// 代入候補にする特別な点: 枝の定数（スコーレム定数）と、f の値が定数とわかっている閉じた点
+    fn special_points(&mut self, st: &mut BState) -> Res<Vec<Poly>> {
+        let mut out: Vec<Poly> = Vec::new();
+        for (i, c) in self.e.k.consts().iter().enumerate() {
+            if self.e.k.is_ancestor(c.branch(), st.b) {
+                out.push(Poly::cnst(i as u32));
+            }
+        }
+        // 規則の左辺 f(p(x)) に小さな有理数を代入した点 K のうち、f(K) の正規形が定数のもの
+        let mut cands: Vec<Poly> = Vec::new();
+        for r in &st.rules {
+            if let Atom::F(p) = &r.lhs {
+                if r.nvars == 0 {
+                    cands.push((**p).clone());
+                } else if r.nvars == 1 {
+                    for c in [0i64, 1, -1] {
+                        cands.push(p.subst_vars(&[Poly::int(c)]));
+                    }
+                }
+            }
+        }
+        for k in cands {
+            if out.len() >= 4 {
+                break;
+            }
+            if k.as_const().is_some() || out.contains(&k) || crate::order::poly_size(&k) > 30 || !k.has_f() {
+                continue;
+            }
+            let a = Atom::F(std::rc::Rc::new(k.clone()));
+            if let Some((r, _)) = self.e.norm_atom(st, &a)? {
+                if r.as_const().is_some() {
+                    out.push(k);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     // ------------------------------------------------------------------
     // 代入による事実の生成
 
@@ -259,9 +317,27 @@ impl Searcher {
         let t1: Vec<Poly> = vec![Poly::zero(), Poly::one(), Poly::int(-1), x(), x().neg()];
         let fx = Poly::f(x());
         let t2: Vec<Poly> = vec![fx.clone(), fx.neg(), Poly::f(Poly::zero()), x().scale(&fe_kernel::poly::q(2)), Poly::int(2)];
+        let specials = self.special_points(st)?;
+        if std::env::var("FE_DEBUG").is_ok() {
+            eprintln!("b{} round {} specials: {:?}", st.b.0, round, specials.iter().map(|p| p.to_string()).collect::<Vec<_>>());
+            for r in &st.rules {
+                if r.nvars == 0 {
+                    eprintln!("  rule0: {} -> {}", r.lhs, r.rhs);
+                }
+            }
+        }
         for g in gens.clone() {
             if self.closed(st) {
                 return Ok(());
+            }
+            // 特別な点での代入
+            for sp in &specials {
+                for (a, bb) in [(x(), sp.clone()), (sp.clone(), x()), (sp.clone(), sp.clone()), (Poly::zero(), sp.clone()), (sp.clone(), Poly::zero())] {
+                    if self.closed(st) || !st.units.contains(&g) {
+                        break;
+                    }
+                    self.try_instance(st, g, vec![a, bb], 1)?;
+                }
             }
             // 1 変数・0 変数の代入
             let mut pool = t1.clone();
@@ -302,7 +378,8 @@ impl Searcher {
             }
             // 打ち消しの代入
             let p = self.e.poly0(g);
-            for s in self.cancel_substs(&p, round) {
+            let invs = st.invs.clone();
+            for s in self.cancel_substs(&p, round, &invs) {
                 if self.closed(st) {
                     return Ok(());
                 }
@@ -339,7 +416,7 @@ impl Searcher {
     }
 
     /// f の引数を打ち消す・単純にする代入（2 変数のまま）
-    fn cancel_substs(&self, p: &Poly, round: usize) -> Vec<Vec<Poly>> {
+    fn cancel_substs(&self, p: &Poly, round: usize, invs: &[(Poly, Poly)]) -> Vec<Vec<Poly>> {
         let atoms = f_atoms_with_vars(p);
         let mut out: Vec<Vec<Poly>> = Vec::new();
         let mut push = |s: Vec<Poly>| {
@@ -359,6 +436,21 @@ impl Searcher {
                     let mut s0 = vec![x(), y()];
                     s0[v as usize] = w.neg().scale(&inv);
                     push(s0);
+                }
+            }
+        }
+        // 係数が閉じた可逆な式（f(j) など）の場合: v := (v − w)·inv(c)
+        for u in &atoms {
+            for v in 0..2u32 {
+                if let Some((c, w)) = linear_in_closed(u, v) {
+                    if let Some((_, ic)) = invs.iter().find(|(a, _)| *a == c) {
+                        let mut s = vec![x(), y()];
+                        s[v as usize] = Poly::var(v).sub(&w).mul(ic);
+                        push(s);
+                        let mut s0 = vec![x(), y()];
+                        s0[v as usize] = w.neg().mul(ic);
+                        push(s0);
+                    }
                 }
             }
         }
@@ -1232,4 +1324,30 @@ pub fn rank1_split(p: &Poly) -> Option<(Poly, Poly)> {
         return None;
     }
     Some((a, b))
+}
+
+/// u が変数 v について「閉じた係数 c（定数でない）の 1 次」なら (c, 残り)
+fn linear_in_closed(u: &Poly, v: u32) -> Option<(Poly, Poly)> {
+    let a = Atom::Var(v);
+    let cs = coeffs_in(u, &a);
+    if cs.keys().max() != Some(&1) {
+        return None;
+    }
+    let c = cs.get(&1)?.clone();
+    if c.has_var() || c.as_const().is_some() {
+        return None;
+    }
+    let w = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
+    if w.vars().contains(&v) {
+        return None;
+    }
+    // v が原子の中に現れないこと
+    for (m, _) in u.terms() {
+        for (b, _) in m.factors() {
+            if *b != a && Poly::from_atom(b.clone()).vars().contains(&v) {
+                return None;
+            }
+        }
+    }
+    Some((c, w))
 }
