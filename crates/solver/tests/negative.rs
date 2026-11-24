@@ -107,7 +107,7 @@ fn negative_pathological_equations_are_not_complete() {
         "f(f(x)) = x",
         "f(x + f(y)) = f(x) + y",
         "f(x^2) = f(x)^2",
-        "f(x^2 + y) = f(x)^2 + f(y)",
+        "f(x + y^2) = f(x) + f(y^2)", // 加法的関数はすべて解（病的な解を含む）
         "f(x)*f(y) = f(x*y)",
         "f(x*f(x)) = x^2",
         "f(x - y) = f(x) - f(y)",
@@ -167,5 +167,49 @@ fn negative_database_complete_results_contain_all_simple_solutions() {
         let (l, r) = p.equations[0].parsed.sides();
         let out = solve(l.clone(), r.clone(), Duration::from_secs(2)).unwrap();
         check_sound(&p.id, &l, &r, &out);
+    }
+}
+
+/// 解の集合がわかっている方程式: 完全解決と主張するなら、答えはちょうどその集合でなければならない
+#[test]
+fn negative_known_solution_sets_exact() {
+    // f(x²+y) = f(x)²+f(y): f(0)=0, f(x²)=f(x)², 加法的かつ奇関数、x ≥ 0 で f ≥ 0 なのでコーシーより f(x)=cx、c²=c。解は 0 と x。
+    // f(x+y) = x+f(y): y=0 で f(x) = x + f(0)。解は x + c（c は任意）。
+    // f(x+f(y)) = x+y: 解は x のみ。
+    let cases: Vec<(&str, Vec<&str>)> = vec![
+        ("f(x^2 + y) = f(x)^2 + f(y)", vec!["0", "x"]),
+        ("f(x + y) = x + f(y)", vec!["x + c"]),
+        ("f(x + f(y)) = x + y", vec!["x"]),
+    ];
+    for (eq, want) in cases {
+        let out = run(eq);
+        let (l, r) = parse_general(eq).unwrap();
+        check_sound(eq, &l, &r, &out);
+        if out.status == "complete" {
+            let mut got: Vec<String> = out
+                .families
+                .iter()
+                .map(|f| {
+                    let t = f.template().clone();
+                    // パラメータは c と表示して比較
+                    let s = if f.params().len() == 1 { t.subst_vars(&[Poly::var(0), Poly::var(1), Poly::var(2)]) } else { t };
+                    let txt = s.to_string().replace("v", "c");
+                    txt
+                })
+                .collect();
+            got.sort();
+            let mut w: Vec<String> = want.iter().map(|s| s.to_string()).collect();
+            w.sort();
+            assert_eq!(out.families.len() + out.pw_families.len(), want.len(), "{}: 解の個数が違う: {:?}", eq, got);
+            for wanted in &w {
+                let ok = out.families.iter().any(|f| {
+                    let p = parse_general(&format!("f(x) = {}", wanted.replace('c', "y"))).unwrap().1;
+                    // 1 パラメータの族は Var(2) を y に読み替えて比較
+                    let t = f.template().subst_vars(&[Poly::var(0), Poly::var(1), Poly::var(1)]);
+                    t == p
+                });
+                assert!(ok, "{}: 期待する解 {} がない（得た族: {:?}）", eq, wanted, got);
+            }
+        }
     }
 }
