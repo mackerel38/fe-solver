@@ -457,3 +457,71 @@ fn abandon_split_refused_after_merge() {
     assert!(k.abandon_split(ROOT).is_err());
     assert!(k.lincomb(ROOT, 1, vec![(c(1), m, 0)]).is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// 区分的な解
+
+fn abs_pieces() -> (Vec<fe_kernel::Q>, Vec<Poly>) {
+    (vec![q(0)], vec![x().neg(), c(0), x()])
+}
+
+#[test]
+fn piecewise_verification() {
+    // f(xy) = f(x)f(y) は |x| を解にもつ
+    let k = Kernel::new(f(x().mul(&y())), f(x()).mul(&f(y()))).unwrap();
+    let (b, p) = abs_pieces();
+    assert!(k.verify_piecewise(b.clone(), p.clone()).is_ok());
+    // f(x + y) = f(x) + f(y) は |x| を解にもたない
+    let k2 = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    assert!(k2.verify_piecewise(b.clone(), p.clone()).is_err());
+    // f(x+y) = x + y では x（区分なし相当）は解、|x| は解でない
+    let k3 = k_simple();
+    assert!(k3.verify_piecewise(vec![q(0)], vec![x(), c(0), x()]).is_ok());
+    assert!(k3.verify_piecewise(b.clone(), p.clone()).is_err());
+    // 点の値だけ違うものは解でない
+    assert!(k3.verify_piecewise(vec![q(0)], vec![x(), c(1), x()]).is_err());
+    // 形式の誤り
+    assert!(k.verify_piecewise(vec![q(1), q(0)], vec![x(), c(0), x(), c(0), x()]).is_err());
+    assert!(k.verify_piecewise(vec![q(0)], vec![x(), x()]).is_err());
+    assert!(k.verify_piecewise(vec![q(0)], vec![f(x()), c(0), x()]).is_err());
+}
+
+#[test]
+fn piecewise_marking() {
+    let mut k = Kernel::new(f(x().mul(&y())), f(x()).mul(&f(y()))).unwrap();
+    // 仮定として A: x < 0 ∨ f(x) = x,  B: x > 0 ∨ f(x) = −x,  C: f(0) = 0 を置く
+    let (a0, ha, _, _, _) = k.split_em(ROOT, cl(1, vec![Lit::gt(x().neg()), Lit::eq(f(x()).sub(&x()))])).unwrap();
+    let (b0, hb, _, _, _) = k.split_em(a0, cl(1, vec![Lit::gt(x()), Lit::eq(f(x()).add(&x()))])).unwrap();
+    let (c0, hc, _, _, _) = k.split_em(b0, cl(0, vec![Lit::eq(f(c(0)))])).unwrap();
+    let (b, p) = abs_pieces();
+    let fam = k.verify_piecewise(b.clone(), p.clone()).unwrap();
+    // 区間の順序は (−∞,0), {0}, (0,∞)
+    assert!(k.mark_piecewise(c0, vec![ha, hc, hb], fam.clone()).is_err(), "区間と事実の対応が違う");
+    k.mark_piecewise(c0, vec![hb, hc, ha], fam).unwrap();
+    let concl = k.conclude();
+    assert_eq!(concl.pw_families.len(), 1);
+    assert!(!concl.complete, "他の枝が開いている");
+}
+
+#[test]
+fn piecewise_marking_rejects_insufficient_conditions() {
+    let mut k = Kernel::new(f(x().mul(&y())), f(x()).mul(&f(y()))).unwrap();
+    // x > 1 ∨ f(x) = x は (0, ∞) 全体では f(x) = x を与えない
+    let (a0, ha, _, _, _) = k.split_em(ROOT, cl(1, vec![Lit::gt(x().sub(&c(1))), Lit::eq(f(x()).sub(&x()))])).unwrap();
+    let (b0, hb, _, _, _) = k.split_em(a0, cl(1, vec![Lit::gt(x()), Lit::eq(f(x()).add(&x()))])).unwrap();
+    let (c0, hc, _, _, _) = k.split_em(b0, cl(0, vec![Lit::eq(f(c(0)))])).unwrap();
+    let (b, p) = abs_pieces();
+    let fam = k.verify_piecewise(b, p).unwrap();
+    assert!(k.mark_piecewise(c0, vec![hb, hc, ha], fam).is_err());
+}
+
+#[test]
+fn piecewise_literal_falsity() {
+    use fe_kernel::piecewise::PwFamily;
+    let _ = std::mem::size_of::<PwFamily>();
+    let k = Kernel::new(f(x().mul(&y())), f(x()).mul(&f(y()))).unwrap();
+    let fam = k.verify_piecewise(vec![q(0)], vec![x().neg(), c(0), x()]).unwrap();
+    assert_eq!(fam.interval(0), (None, Some(q(0))));
+    assert_eq!(fam.interval(1), (Some(q(0)), Some(q(0))));
+    assert_eq!(fam.interval(2), (Some(q(0)), None));
+}

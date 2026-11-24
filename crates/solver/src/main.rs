@@ -79,8 +79,10 @@ fn real_main() -> i32 {
                 }
             }
             if as_json {
-                let fams: Vec<String> = out.families.iter().map(|f| json_str(&fe_render::fmt_family(f))).collect();
-                let found: Vec<String> = out.found.iter().map(|f| json_str(&fe_render::fmt_family(f))).collect();
+                let mut fams: Vec<String> = out.families.iter().map(|f| json_str(&fe_render::fmt_family(f))).collect();
+                fams.extend(out.pw_families.iter().map(|f| json_str(&fe_render::fmt_pw(f))));
+                let mut found: Vec<String> = out.found.iter().map(|f| json_str(&fe_render::fmt_family(f))).collect();
+                found.extend(out.pw_found.iter().map(|f| json_str(&fe_render::fmt_pw(f))));
                 let reasons: Vec<String> = out.reasons.iter().map(|r| json_str(r)).collect();
                 let stats: Vec<String> = out.stats.iter().map(|(k, v)| format!("{}:{}", json_str(k), v)).collect();
                 println!(

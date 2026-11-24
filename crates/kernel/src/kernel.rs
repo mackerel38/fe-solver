@@ -17,8 +17,9 @@
 //! 定数 (`Const`) は場合分け（排中律）で導入され、導入した枝とその子孫でのみ使える（スコープ検査）。
 
 use crate::clause::{Clause, Lit, Rel};
+use crate::piecewise::PwFamily;
 use crate::poly::{Atom, Poly, Q};
-use num_traits::Signed;
+use num_traits::{One, Signed};
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -103,6 +104,8 @@ pub struct BranchRec {
     hyps: Vec<Fact>,
     contradiction: Option<Fact>,
     solution: Option<(Fact, Family)>,
+    /// 区分的な解の確定（区間ごとの事実と族）
+    pw_solution: Option<(Vec<Fact>, PwFamily)>,
     /// 取り消された場合分けの子孫（以後どこでも使えない）
     dead: bool,
     /// この枝の場合分けから Merge で事実を持ち上げたか（取り消し不可になる）
@@ -133,6 +136,9 @@ impl BranchRec {
     }
     pub fn solution(&self) -> Option<&(Fact, Family)> {
         self.solution.as_ref()
+    }
+    pub fn pw_solution(&self) -> Option<&(Vec<Fact>, PwFamily)> {
+        self.pw_solution.as_ref()
     }
 }
 
@@ -177,6 +183,7 @@ impl Family {
 pub struct Conclusion {
     pub complete: bool,
     pub families: Vec<Family>,
+    pub pw_families: Vec<PwFamily>,
     pub open_leaves: Vec<BranchId>,
 }
 
@@ -214,6 +221,7 @@ impl Kernel {
                 hyps: vec![],
                 contradiction: None,
                 solution: None,
+                pw_solution: None,
                 dead: false,
                 merged: false,
             }],
@@ -704,6 +712,7 @@ impl Kernel {
             hyps: vec![],
             contradiction: None,
             solution: None,
+            pw_solution: None,
             dead: false,
             merged: false,
         });
@@ -717,7 +726,7 @@ impl Kernel {
         if !r.children.is_empty() {
             return Err("この枝は既に場合分けされている".into());
         }
-        if r.solution.is_some() {
+        if r.solution.is_some() || r.pw_solution.is_some() {
             return Err("この枝は既に解が確定している".into());
         }
         Ok(())
@@ -904,7 +913,7 @@ impl Kernel {
             return Err("別の検証核で検証された族".into());
         }
         let r = &self.branches[b.0 as usize];
-        if !r.children.is_empty() || r.solution.is_some() {
+        if !r.children.is_empty() || r.solution.is_some() || r.pw_solution.is_some() {
             return Err("葉ではないか既に解が確定している".into());
         }
         let c = self.premise(fact, b)?;
@@ -919,30 +928,112 @@ impl Kernel {
     /// 証明木全体の結論。すべての葉が閉じているか解の形が確定していれば complete。
     pub fn conclude(&self) -> Conclusion {
         let mut families: Vec<Family> = Vec::new();
+        let mut pw: Vec<PwFamily> = Vec::new();
         let mut open = Vec::new();
-        self.collect(ROOT, &mut families, &mut open);
-        Conclusion { complete: open.is_empty(), families, open_leaves: open }
+        self.collect(ROOT, &mut families, &mut pw, &mut open);
+        Conclusion { complete: open.is_empty(), families, pw_families: pw, open_leaves: open }
     }
 
-    fn collect(&self, b: BranchId, fams: &mut Vec<Family>, open: &mut Vec<BranchId>) {
+    fn collect(&self, b: BranchId, fams: &mut Vec<Family>, pw: &mut Vec<PwFamily>, open: &mut Vec<BranchId>) {
         if self.is_closed(b) {
             return;
         }
         let r = &self.branches[b.0 as usize];
         if r.children.is_empty() {
-            match &r.solution {
-                Some((_, fam)) => {
-                    if !fams.iter().any(|f| f.template == fam.template) {
-                        fams.push(fam.clone());
-                    }
+            if let Some((_, fam)) = &r.solution {
+                if !fams.iter().any(|f| f.template == fam.template) {
+                    fams.push(fam.clone());
                 }
-                None => open.push(b),
+            } else if let Some((_, fam)) = &r.pw_solution {
+                if !pw.iter().any(|f| f.breaks == fam.breaks && f.pieces == fam.pieces) {
+                    pw.push(fam.clone());
+                }
+            } else {
+                open.push(b);
             }
             return;
         }
         for &c in &r.children {
-            self.collect(c, fams, open);
+            self.collect(c, fams, pw, open);
         }
+    }
+
+    /// 区分的な族が解であることを確かめる（詳細は piecewise モジュール）
+    pub fn verify_piecewise(&self, breaks: Vec<Q>, pieces: Vec<Poly>) -> R<PwFamily> {
+        crate::piecewise::verify(&self.lhs, &self.rhs, &breaks, &pieces)?;
+        Ok(PwFamily { kernel: self.id, breaks, pieces })
+    }
+
+    /// 葉 b で、区分的な族の各区間 i について事実 facts[i] が「その区間では f(x) = g_i(x)」を与えるなら、
+    /// 葉を「解が確定」とする。facts[i] の節は、f を含む等式リテラル λ(f(t) − h) = 0（t = x、または点の区間では
+    /// t = 区切り点）がちょうど 1 つで、他のリテラルは x の 1 次式でその区間全体で偽、h は区間上で g_i と一致すること。
+    /// 根拠: 区間上では他のリテラルが偽なので f(x) = h(x) = g_i(x)。区間は実数全体を覆う。
+    pub fn mark_piecewise(&mut self, b: BranchId, facts: Vec<Fact>, fam: PwFamily) -> R<()> {
+        self.check_branch(b)?;
+        if fam.kernel != self.id {
+            return Err("別の検証核で検証された族".into());
+        }
+        let r = &self.branches[b.0 as usize];
+        if !r.children.is_empty() || r.solution.is_some() || r.pw_solution.is_some() {
+            return Err("葉ではないか既に解が確定している".into());
+        }
+        if facts.len() != fam.pieces.len() {
+            return Err("区間の数と事実の数が合わない".into());
+        }
+        for (i, f) in facts.iter().enumerate() {
+            let c = self.premise(*f, b)?.clone();
+            let (lo, hi) = fam.interval(i);
+            let point = i % 2 == 1;
+            if c.nvars() > 1 {
+                return Err("事実の変数が多すぎる".into());
+            }
+            let mut found = false;
+            for l in c.lits() {
+                if l.poly().has_f() {
+                    if found || l.rel() != Rel::Eq {
+                        return Err("f を含むリテラルは等式 1 つだけ".into());
+                    }
+                    found = true;
+                    // λ(f(t) − h) の形
+                    let t = if c.nvars() == 1 {
+                        Poly::var(0)
+                    } else if point {
+                        Poly::constant(lo.clone().unwrap())
+                    } else {
+                        return Err("閉じた事実は点の区間にだけ使える".into());
+                    };
+                    let fa = Atom::F(std::rc::Rc::new(t.clone()));
+                    let p = l.poly();
+                    let lam = p
+                        .terms()
+                        .iter()
+                        .find(|(m, _)| m.factors().len() == 1 && m.factors()[0] == (fa.clone(), 1))
+                        .map(|(_, c)| c.clone())
+                        .ok_or("f(x) の項がない")?;
+                    let h = Poly::from_atom(fa).sub(&p.scale(&(Q::one() / lam)));
+                    if h.has_f() || h.has_inv() || !h.consts().is_empty() || h.vars().iter().any(|&v| v != 0) {
+                        return Err("h が x の多項式ではない".into());
+                    }
+                    let g = &fam.pieces[i];
+                    let agree = if point {
+                        let bp = Poly::constant(lo.clone().unwrap());
+                        h.subst_vars(&[bp.clone()]) == g.subst_vars(&[bp])
+                    } else {
+                        h == *g
+                    };
+                    if !agree {
+                        return Err("区間上で式が一致しない".into());
+                    }
+                } else if !crate::piecewise::literal_false_on(l.poly(), l.rel(), &lo, &hi, point) {
+                    return Err("条件リテラルが区間全体で偽になっていない".into());
+                }
+            }
+            if !found {
+                return Err("f(x) = h(x) のリテラルがない".into());
+            }
+        }
+        self.branches[b.0 as usize].pw_solution = Some((facts, fam));
+        Ok(())
     }
 }
 

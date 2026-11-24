@@ -21,6 +21,11 @@
 //! ```
 //!
 //! ```compile_fail
+//! // 検証済みの区分的な族も外から作れない
+//! let fam = fe_kernel::PwFamily { kernel: 1, breaks: vec![], pieces: vec![] };
+//! ```
+//!
+//! ```compile_fail
 //! // 検証核が保持する事実の一覧は外から書き換えられない
 //! fn tamper(k: &mut fe_kernel::Kernel) { k.facts.clear(); }
 //! ```
@@ -33,8 +38,10 @@
 
 pub mod clause;
 pub mod kernel;
+pub mod piecewise;
 pub mod poly;
 
 pub use clause::{Clause, Lit, Rel};
 pub use kernel::{BranchId, Conclusion, Fact, Family, Kernel, Rule, Split, ROOT};
+pub use piecewise::PwFamily;
 pub use poly::{Atom, Mono, Poly, Q};

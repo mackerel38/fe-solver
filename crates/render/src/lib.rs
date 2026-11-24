@@ -295,6 +295,9 @@ fn proof_roots(k: &Kernel, b: BranchId, out: &mut Vec<Fact>) {
     if let Some((f, _)) = r.solution() {
         out.push(*f);
     }
+    if let Some((fs, _)) = r.pw_solution() {
+        out.extend(fs.iter().copied());
+    }
     if let Some(Split::Components { fact }) = r.split() {
         out.push(*fact);
     }
@@ -410,15 +413,15 @@ impl<'a> Ctx<'a> {
             Rule::EqOrNe { poly } => format!("{} は 0 か 0 でないかのどちらかなので", fmt_poly(poly, &n)),
             Rule::ZeroProduct { premise, factors, .. } => {
                 let fs: Vec<String> = factors.iter().map(|q| format!("({})", fmt_poly(q, &n))).collect();
-                format!("{} は {} = 0 と因数分解できるので（実数の積が 0 なら因子のどれかが 0）", self.lbl(*premise), fs.join(""))
+                format!("{} を {} = 0 と因数分解して", self.lbl(*premise), fs.join(""))
             }
             Rule::NonzeroFactor { premise, factors, .. } => {
                 let fs: Vec<String> = factors.iter().map(|q| format!("({})", fmt_poly(q, &n))).collect();
-                format!("{} より {} ≠ 0 なので、各因子も 0 でなく", self.lbl(*premise), fs.join(""))
+                format!("{} より {} ≠ 0 なので", self.lbl(*premise), fs.join(""))
             }
             Rule::Resolve { a, la, b, .. } => {
                 let l = &k.clause(*a).lits()[*la];
-                format!("{} と {} より（{} は成り立たないので）", self.lbl(*a), self.lbl(*b), fmt_lit(l, &n))
+                { let _ = l; format!("{} と {} より", self.lbl(*a), self.lbl(*b)) }
             }
             Rule::Trichotomy { .. } => "実数の三分律より".into(),
             Rule::StrictNe { premise, .. } => format!("{} より", self.lbl(*premise)),
@@ -438,7 +441,7 @@ impl<'a> Ctx<'a> {
                 if !constant.is_zero() {
                     parts.push(fmt_q(constant));
                 }
-                let base = if squares.is_empty() { "" } else { "（平方は非負）" };
+                let base = "";
                 format!("{} の和をとって{}", parts.join(" + "), base)
             }
             Rule::MulIneq { a, b, .. } => format!("{} と {} を掛け合わせて", self.lbl(*a), self.lbl(*b)),
@@ -452,7 +455,7 @@ impl<'a> Ctx<'a> {
             Rule::Weaken { premise, .. } => format!("{} より特に", self.lbl(*premise)),
             Rule::Merge { facts, .. } => {
                 let fs: Vec<String> = facts.iter().flatten().map(|f| self.lbl(*f)).collect();
-                format!("どの場合でも成り立つので（{}）", fs.join(", "))
+                format!("{} より、どの場合でも成り立つので", fs.join(", "))
             }
         }
     }
@@ -528,6 +531,52 @@ pub fn fmt_family(fam: &fe_kernel::Family) -> String {
     s
 }
 
+/// 区分的な族の表示（区切り点の値が隣の区間の式と一致すればまとめる）
+pub fn fmt_pw(fam: &fe_kernel::PwFamily) -> String {
+    let n = Names::plain();
+    let br = fam.breaks();
+    let pcs = fam.pieces();
+    let mut parts: Vec<String> = Vec::new();
+    let qs = |q: &Q| fmt_q(q);
+    for (k, b) in br.iter().enumerate() {
+        let left = &pcs[2 * k];
+        let pt = &pcs[2 * k + 1];
+        let right = &pcs[2 * k + 2];
+        let bp = Poly::constant(b.clone());
+        let pv = pt.subst_vars(&[bp.clone()]);
+        let lo = if k == 0 { None } else { Some(br[k - 1].clone()) };
+        // 左の区間
+        let lcond = match &lo {
+            None => format!("x < {}", qs(b)),
+            Some(l) => format!("{} < x < {}", qs(l), qs(b)),
+        };
+        if k == 0 || true {
+            let left_closed = left.subst_vars(&[bp.clone()]) == pv;
+            let right_closed = right.subst_vars(&[bp.clone()]) == pv;
+            if k == 0 {
+                if left_closed && !right_closed {
+                    parts.push(format!("{}（x ≤ {}）", fmt_poly(left, &n), qs(b)));
+                } else {
+                    parts.push(format!("{}（{}）", fmt_poly(left, &n), lcond));
+                }
+            }
+            if !left_closed && !right_closed {
+                parts.push(format!("{}（x = {}）", fmt_poly(&pv, &n), qs(b)));
+            }
+            let hi = br.get(k + 1);
+            let rcond = match (hi, right_closed && !(left_closed && !right_closed) && !(left_closed && right_closed && false)) {
+                (None, true) => format!("x ≥ {}", qs(b)),
+                (None, false) => format!("x > {}", qs(b)),
+                (Some(h), true) => format!("{} ≤ x < {}", qs(b), qs(h)),
+                (Some(h), false) => format!("{} < x < {}", qs(b), qs(h)),
+            };
+            let rc = if left_closed && !right_closed { rcond.replace('≥', ">").replace("≤ x", "< x") } else { rcond };
+            parts.push(format!("{}（{}）", fmt_poly(right, &n), rc));
+        }
+    }
+    format!("f(x) = {}", parts.join(", "))
+}
+
 /// 方程式の表示
 pub fn fmt_equation(k: &Kernel) -> String {
     let (l, r) = k.equation();
@@ -573,7 +622,12 @@ fn render_branch(ctx: &mut Ctx, b: BranchId, need: &BTreeSet<Fact>, depth: usize
         return;
     }
     if let Some((f, fam)) = r.solution() {
-        let _ = writeln!(ctx.out, "{}{} より、この場合は {} である（解であることは下の検算で確認）。", indent, ctx.lbl(*f), fmt_family(fam));
+        let _ = writeln!(ctx.out, "{}{} より、この場合は {} である。", indent, ctx.lbl(*f), fmt_family(fam));
+        return;
+    }
+    if let Some((fs, fam)) = r.pw_solution() {
+        let ls: Vec<String> = fs.iter().map(|f| ctx.lbl(*f)).collect();
+        let _ = writeln!(ctx.out, "{}{} より、この場合は {} である。", indent, ls.join(", "), fmt_pw(fam));
         return;
     }
     let children = r.children().to_vec();
@@ -633,7 +687,8 @@ pub fn render(k: &Kernel, concl: &Conclusion) -> String {
     ctx.label.remove(&k.axiom());
     ctx.emit(k.axiom(), "");
     if concl.complete {
-        let fams: Vec<String> = concl.families.iter().map(fmt_family).collect();
+        let mut fams: Vec<String> = concl.families.iter().map(fmt_family).collect();
+        fams.extend(concl.pw_families.iter().map(fmt_pw));
         if fams.is_empty() {
             let _ = writeln!(ctx.out, "\n【結論】解は存在しない。");
         } else {
@@ -642,8 +697,15 @@ pub fn render(k: &Kernel, concl: &Conclusion) -> String {
     }
     let _ = writeln!(ctx.out, "\n【証明】");
     render_branch(&mut ctx, ROOT, &need, 0, "");
-    if !concl.families.is_empty() {
+    if !concl.families.is_empty() || !concl.pw_families.is_empty() {
         let _ = writeln!(ctx.out, "\n【検算】");
+        for fam in &concl.pw_families {
+            let _ = writeln!(
+                ctx.out,
+                "{} は、x, y の符号と各 f の引数の範囲で場合を分けて代入すると、どの場合も両辺が一致する（検証核で確認）。",
+                fmt_pw(fam)
+            );
+        }
         let n = Names::plain();
         for fam in &concl.families {
             let (l, r) = substituted_sides(k, fam);

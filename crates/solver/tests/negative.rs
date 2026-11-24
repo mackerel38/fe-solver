@@ -61,10 +61,38 @@ fn check_sound(eq_desc: &str, l: &Poly, r: &Poly, out: &SolveOutput) {
     for f in out.found.iter().chain(out.families.iter()) {
         assert!(fresh.verify_solution(f.g()).is_ok(), "{}: 解でない族を報告した: {:?}", eq_desc, f.g());
     }
+    for f in out.pw_found.iter().chain(out.pw_families.iter()) {
+        assert!(fresh.verify_piecewise(f.breaks().to_vec(), f.pieces().to_vec()).is_ok(), "{}: 解でない区分的な族を報告した", eq_desc);
+    }
     if out.status == "complete" {
         for (a, b) in brute_force_linear(l, r) {
             let ok = out.families.iter().any(|f| family_contains(f.template(), f.params().len(), &a, &b));
             assert!(ok, "{}: 完全解決と主張したが解 {}x + {} が含まれない", eq_desc, a, b);
+        }
+        // 区分的な解（区切り点 0、各側 ±x, 0, ±1）を総当たりで探し、完全解決の答えに含まれることを確かめる
+        let side = [Poly::var(0), Poly::var(0).neg(), Poly::zero(), Poly::int(1), Poly::int(-1)];
+        for gl in &side {
+            for gr in &side {
+                for v in [Poly::zero(), Poly::int(1), Poly::int(-1)] {
+                    let pieces = vec![gl.clone(), v.clone(), gr.clone()];
+                    if fresh.verify_piecewise(vec![q(0)], pieces.clone()).is_err() {
+                        continue;
+                    }
+                    let as_poly = gl == gr && v == gl.subst_vars(&[Poly::zero()]);
+                    let ok = if as_poly {
+                        out.families.iter().any(|f| f.params().is_empty() && f.template() == gl)
+                            || out.families.iter().any(|f| {
+                                let cs = gl.terms();
+                                let a = cs.iter().find(|(m, _)| !m.is_one()).map(|(_, c)| c.clone()).unwrap_or_else(|| q(0));
+                                let b = cs.iter().find(|(m, _)| m.is_one()).map(|(_, c)| c.clone()).unwrap_or_else(|| q(0));
+                                family_contains(f.template(), f.params().len(), &a, &b)
+                            })
+                    } else {
+                        out.pw_families.iter().any(|f| f.pieces() == &pieces[..])
+                    };
+                    assert!(ok, "{}: 完全解決と主張したが区分的な解 {:?} が含まれない", eq_desc, pieces.iter().map(|p| p.to_string()).collect::<Vec<_>>());
+                }
+            }
         }
     }
 }

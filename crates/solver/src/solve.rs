@@ -1,8 +1,8 @@
 //! 1 問を解く入口。結果は検証核の結論から作る。
 
 use crate::engine::Engine;
-use crate::search::{find_candidates, Searcher};
-use fe_kernel::{Fact, Family, Kernel, Poly, Rel, ROOT};
+use crate::search::{find_candidates, find_pw_candidates, Searcher};
+use fe_kernel::{Fact, Family, Kernel, Poly, PwFamily, Rel, ROOT};
 use std::time::{Duration, Instant};
 
 pub struct SolveOutput {
@@ -10,6 +10,8 @@ pub struct SolveOutput {
     pub status: &'static str,
     pub families: Vec<Family>,
     pub found: Vec<Family>,
+    pub pw_families: Vec<PwFamily>,
+    pub pw_found: Vec<PwFamily>,
     pub reasons: Vec<String>,
     pub error: Option<String>,
     pub elapsed: Duration,
@@ -39,9 +41,15 @@ pub fn solve(lhs: Poly, rhs: Poly, timeout: Duration) -> Result<SolveOutput, Str
             found.push(fam.clone());
         }
     }
+    let mut pw_found = find_pw_candidates(&s.e.k);
+    for fam in &concl.pw_families {
+        if !pw_found.iter().any(|f| f.pieces() == fam.pieces() && f.breaks() == fam.breaks()) {
+            pw_found.push(fam.clone());
+        }
+    }
     let status = if concl.complete && error.is_none() {
         "complete"
-    } else if !found.is_empty() {
+    } else if !found.is_empty() || !pw_found.is_empty() {
         "partial"
     } else {
         "unresolved"
@@ -75,6 +83,8 @@ pub fn solve(lhs: Poly, rhs: Poly, timeout: Duration) -> Result<SolveOutput, Str
         status,
         families: concl.families.clone(),
         found,
+        pw_families: concl.pw_families.clone(),
+        pw_found,
         reasons,
         error,
         elapsed: start.elapsed(),
@@ -97,10 +107,13 @@ pub fn report(out: &SolveOutput) -> String {
         _ => {
             s.push_str(if out.status == "partial" { "状態: 部分結果\n" } else { "状態: 未解決\n" });
             s.push_str(&format!("方程式: {}\n", fe_render::fmt_equation(k)));
-            if !out.found.is_empty() {
+            if !out.found.is_empty() || !out.pw_found.is_empty() {
                 s.push_str("見つけた解（検証核で代入を確認済み）:\n");
                 for f in &out.found {
                     s.push_str(&format!("  {}\n", fe_render::fmt_family(f)));
+                }
+                for f in &out.pw_found {
+                    s.push_str(&format!("  {}\n", fe_render::fmt_pw(f)));
                 }
             }
             s.push_str("止まった理由:\n");

@@ -246,6 +246,9 @@ impl Searcher {
                 return Ok(());
             }
         }
+        if self.try_piecewise_leaf(st)? {
+            return Ok(());
+        }
         let reason = if self.solution_rule(st).is_some() {
             "解の形 f(x)=g(x) は得たが、パラメータを決めきれない".to_string()
         } else {
@@ -729,6 +732,76 @@ impl Searcher {
             }
         }
         Ok(())
+    }
+
+    /// 正の側・0・負の側のそれぞれで f の式を与える事実がそろっていれば、区分的な解として葉を確定する
+    fn try_piecewise_leaf(&mut self, st: &mut BState) -> Res<bool> {
+        let fx = Atom::F(std::rc::Rc::new(x()));
+        let zero = Q::zero();
+        // 区間 (lo, hi) または点で f(x) = h(x) を与える事実と h を探す
+        let mut find = |this: &Self, lo: Option<Q>, hi: Option<Q>, point: bool| -> Option<(Fact, Poly)> {
+            let mut cands: Vec<Fact> = st.units.iter().chain(st.others.iter()).copied().collect();
+            cands.sort();
+            for f in cands {
+                let c = this.e.clause(f);
+                if c.nvars() > 1 {
+                    continue;
+                }
+                let mut h: Option<Poly> = None;
+                let mut ok = true;
+                for l in c.lits() {
+                    if l.poly().has_f() {
+                        if h.is_some() || l.rel() != Rel::Eq {
+                            ok = false;
+                            break;
+                        }
+                        let t = if c.nvars() == 1 { x() } else if point { Poly::constant(lo.clone().unwrap()) } else { ok = false; break; };
+                        let ta = Atom::F(std::rc::Rc::new(t.clone()));
+                        let lam = match coeff_of_atom(l.poly(), &ta) {
+                            Some(v) => v,
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        };
+                        let hh = Poly::from_atom(ta).sub(&l.poly().scale(&(Q::one() / lam)));
+                        if hh.has_f() || hh.has_inv() || !hh.consts().is_empty() || hh.vars().iter().any(|&v| v != 0) {
+                            ok = false;
+                            break;
+                        }
+                        h = Some(hh);
+                    } else if !fe_kernel::piecewise::literal_false_on(l.poly(), l.rel(), &lo, &hi, point) {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    if let Some(hh) = h {
+                        return Some((f, hh));
+                    }
+                }
+            }
+            None
+        };
+        let _ = &fx;
+        let neg = find(self, None, Some(zero.clone()), false);
+        let pt = find(self, Some(zero.clone()), Some(zero.clone()), true);
+        let pos = find(self, Some(zero.clone()), None, false);
+        let (neg, pt, pos) = match (neg, pt, pos) {
+            (Some(a), Some(b), Some(c)) => (a, b, c),
+            _ => return Ok(false),
+        };
+        let pv = pt.1.subst_vars(&[Poly::zero()]);
+        if neg.1 == pos.1 && pv == pos.1.subst_vars(&[Poly::zero()]) {
+            return Ok(false); // 多項式の解（通常の仕上げで扱う）
+        }
+        let fam = match self.e.k.verify_piecewise(vec![zero], vec![neg.1.clone(), pv, pos.1.clone()]) {
+            Ok(f) => f,
+            Err(_) => return Ok(false),
+        };
+        self.e.k.mark_piecewise(st.b, vec![neg.0, pt.0, pos.0], fam)?;
+        self.bump("piecewise_leaf");
+        Ok(true)
     }
 
     /// 各点ごとの選言 ∀x. f(x) = g₁(x) ∨ … ∨ f(x) = g_k(x)（g_i は x の f を含まない）を探す
@@ -1727,6 +1800,31 @@ pub fn find_candidates(k: &Kernel) -> Vec<Family> {
         if let Ok(fam) = k.verify_solution(&g) {
             if !out.iter().any(|f| f.template() == fam.template()) {
                 out.push(fam);
+            }
+        }
+    }
+    out
+}
+
+/// 区分的な候補（区切り点 0）: 各側の式と点の値を小さな集合から選び、検証核で検証する
+pub fn find_pw_candidates(k: &Kernel) -> Vec<fe_kernel::PwFamily> {
+    use fe_kernel::poly::{q, qf};
+    let side: Vec<Poly> = vec![x(), x().neg(), Poly::zero(), Poly::one(), Poly::int(-1), x().scale(&q(2)), x().scale(&qf(1, 2)), x().scale(&q(-2))];
+    let mut out: Vec<fe_kernel::PwFamily> = Vec::new();
+    for gl in &side {
+        for gr in &side {
+            let mut points: Vec<Poly> = vec![gl.subst_vars(&[Poly::zero()]), gr.subst_vars(&[Poly::zero()]), Poly::zero(), Poly::one()];
+            points.dedup();
+            for v in points {
+                // 区分なし（多項式）と同じものは除く
+                if gl == gr && v == gl.subst_vars(&[Poly::zero()]) {
+                    continue;
+                }
+                if let Ok(fam) = k.verify_piecewise(vec![Q::zero()], vec![gl.clone(), v.clone(), gr.clone()]) {
+                    if !out.iter().any(|f| f.pieces() == fam.pieces()) {
+                        out.push(fam);
+                    }
+                }
             }
         }
     }
