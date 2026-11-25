@@ -50,7 +50,27 @@ python3 scripts/bench.py --ids FE-0001,FE-0004 --no-tests
 ```
 
 最後にセットごとの完全解決数・失敗理由の分類・前回との差分・テスト（負のテストを含む）の結果を表示する。
-問題ごとの結果は `bench/runs/<日時>/results.jsonl`、集計は `summary.json`、最新の集計は `bench/latest.json`。
+問題ごとの結果は `bench/runs/<日時>/results.jsonl`、集計は `summary.json`、最新の集計は `bench/latest.json`（いずれも git には入れない）。
+`--save-proofs` で問題ごとの証明文・報告を `<出力先>/proofs/` に保存する。
+
+## GitHub での実行と公開（GitHub Actions / Pages）
+
+- `.github/workflows/ci.yml`: push・PR のたびに全テスト（検証核の規則テスト・パーサ・負のテスト）を実行する。
+- `.github/workflows/bench.yml`（ワークフロー名 benchmark）: 手動起動（Actions タブ → benchmark → Run workflow）。
+  全問を 20 分割して並列に解き（`scripts/bench.py --shard K/20`）、結果を集約して（`scripts/merge_results.py`）、
+  結果と問題ごとの証明のページを作り（`scripts/build_site.py`）、GitHub Pages に公開する。
+  時間制限（評価・挑戦の 1 問あたり秒数）と解くセットは起動時に指定できる。集約した結果はアーティファクト `merged-results` にも残る。
+- 初回の準備: リポジトリの Settings → Pages → Build and deployment の Source を「GitHub Actions」にする。
+- 生成物（`bench/runs/`, `reports/`, `site/` など）はリポジトリに入れない（`.gitignore`）。手元では従来どおり
+  `python3 scripts/bench.py` などで作れる。
+
+手元でサイトを作る例:
+
+```
+python3 scripts/bench.py --sets seen,unseen --timeout 60 --save-proofs --out out
+python3 scripts/merge_results.py out --out merged
+python3 scripts/build_site.py merged --out site   # site/index.html を開く
+```
 
 ## テスト
 

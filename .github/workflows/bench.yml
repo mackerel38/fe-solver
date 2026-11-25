@@ -1,0 +1,126 @@
+name: benchmark
+
+# 手動起動: Actions タブ → benchmark → Run workflow
+# 全問を 20 分割して並列に解き、結果と証明を GitHub Pages に公開する。
+on:
+  workflow_dispatch:
+    inputs:
+      eval_timeout:
+        description: "評価・初見セットの 1 問あたり秒数"
+        required: true
+        default: "300"
+      challenge_timeout:
+        description: "挑戦セットの 1 問あたり秒数"
+        required: true
+        default: "1800"
+      sets:
+        description: "解くセット（seen,unseen,challenge のカンマ区切り）"
+        required: true
+        default: "seen,unseen,challenge"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: cargo build --release --locked
+      - uses: actions/upload-artifact@v7
+        with:
+          name: solver
+          path: target/release/fe_solver
+          retention-days: 3
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test（出力を保存）
+        run: |
+          set -o pipefail
+          cargo test --release --workspace --locked 2>&1 | tee tests.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: tests
+          path: tests.txt
+          retention-days: 7
+
+  shard:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: solver
+          path: target/release
+      - run: chmod +x target/release/fe_solver
+      - name: Benchmark (shard ${{ matrix.shard }}/20)
+        run: >
+          python3 scripts/bench.py --no-build --no-tests --save-proofs
+          --sets "${{ inputs.sets }}"
+          --timeout "${{ inputs.eval_timeout }}"
+          --challenge-timeout "${{ inputs.challenge_timeout }}"
+          --shard "${{ matrix.shard }}/20"
+          --stop-after-min 290
+          --out out
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: results-${{ matrix.shard }}
+          path: out
+          retention-days: 7
+
+  publish:
+    needs: [shard, tests]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: results-*
+          path: shards
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: tests
+          path: tests
+      - name: Merge results
+        run: >
+          python3 scripts/merge_results.py shards/* --out merged --tests tests/tests.txt
+          --meta "計測=${{ github.run_id }}" "コミット=${{ github.sha }}"
+          "時間制限=評価 ${{ inputs.eval_timeout }} 秒/問, 挑戦 ${{ inputs.challenge_timeout }} 秒/問"
+      - name: Build site
+        run: python3 scripts/build_site.py merged --out site
+      - uses: actions/upload-artifact@v7
+        with:
+          name: merged-results
+          path: merged
+          retention-days: 30
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v5

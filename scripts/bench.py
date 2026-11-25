@@ -31,11 +31,24 @@ def load(path):
         return json.load(fp)
 
 
-def run_one(pid, timeout):
+def _limit_memory(mb):
+    """子プロセスの仮想メモリの上限（暴走したときに計算機全体を巻き込まないため）"""
+    def f():
+        if mb:
+            import resource
+            lim = int(mb) * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (lim, lim))
+    return f
+
+
+def run_one(pid, timeout, proof_dir=None, mem_mb=0):
     t0 = time.time()
+    cmd = [BIN, "solve", pid, "--timeout", str(timeout), "--json"]
+    if proof_dir:
+        cmd.append("--proof")
     try:
-        p = subprocess.run([BIN, "solve", pid, "--timeout", str(timeout), "--json"],
-                           capture_output=True, text=True, timeout=timeout * 2 + 15)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout * 1.2 + 30,
+                           preexec_fn=_limit_memory(mem_mb))
         dt = time.time() - t0
         line = p.stdout.strip().splitlines()[-1] if p.stdout.strip() else ""
         if p.returncode != 0 or not line.startswith("{"):
@@ -44,6 +57,10 @@ def run_one(pid, timeout):
                     "time_ms": int(dt * 1000), "families": [], "found": []}
         r = json.loads(line)
         r["wall_ms"] = int(dt * 1000)
+        if proof_dir:
+            # --proof の報告（証明文または部分結果）は標準エラーに出る
+            with open(os.path.join(proof_dir, pid + ".txt"), "w", encoding="utf-8") as fp:
+                fp.write(p.stderr)
         return r
     except subprocess.TimeoutExpired:
         return {"id": pid, "status": "killed", "reasons": ["外部の時間制限で強制終了"],
@@ -54,7 +71,7 @@ def classify(r):
     """失敗理由の分類キー"""
     if r["status"] == "complete":
         return "complete"
-    if r["status"] in ("crash", "killed"):
+    if r["status"] in ("crash", "killed", "skipped"):
         return r["status"]
     rs = r.get("reasons", [])
     keys = set()
@@ -99,6 +116,11 @@ def main():
     ap.add_argument("--no-tests", action="store_true")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--shard", default="", help="K/N: 整列した問題のうち番号 mod N が K のものだけ解く（並列実行用）")
+    ap.add_argument("--out", default="", help="結果の出力先（既定は bench/runs/<日時>）")
+    ap.add_argument("--save-proofs", action="store_true", help="問題ごとの証明文・報告を <出力先>/proofs/ に保存")
+    ap.add_argument("--mem-limit-mb", type=int, default=-1, help="1 プロセスのメモリ上限（既定: 総メモリの 80%% を並列数で割った値, 0 で無制限）")
+    ap.add_argument("--stop-after-min", type=float, default=0, help="この分数を過ぎたら新しい問題を始めない（CI のジョブ時間制限用）")
     args = ap.parse_args()
 
     if not args.no_build:
@@ -115,17 +137,40 @@ def main():
     ids = [i for i in sorted(set_of) if set_of[i] in wanted]
     if args.ids:
         ids = [i for i in args.ids.split(",") if i in set_of]
+    if args.shard:
+        k, n = (int(t) for t in args.shard.split("/"))
+        ids = [i for j, i in enumerate(ids) if j % n == k]
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + (("-" + args.tag) if args.tag else "")
-    out_dir = os.path.join(ROOT, "bench", "runs", stamp)
+    out_dir = args.out if args.out else os.path.join(ROOT, "bench", "runs", stamp)
     os.makedirs(out_dir, exist_ok=True)
+    proof_dir = None
+    if args.save_proofs:
+        proof_dir = os.path.join(out_dir, "proofs")
+        os.makedirs(proof_dir, exist_ok=True)
+    mem_mb = args.mem_limit_mb
+    if mem_mb < 0:
+        try:
+            total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // (1024 * 1024)
+            mem_mb = max(2048, int(total * 0.8 / max(1, args.jobs)))
+        except (ValueError, OSError):
+            mem_mb = 0
     results = {}
     t0 = time.time()
+    skipped = []
+
+    def run_or_skip(pid, to):
+        if args.stop_after_min and time.time() - t0 > args.stop_after_min * 60:
+            skipped.append(pid)
+            return {"id": pid, "status": "skipped", "reasons": ["CI のジョブ時間の都合で実行しなかった"],
+                    "time_ms": 0, "families": [], "found": []}
+        return run_one(pid, to, proof_dir, mem_mb)
+
     with cf.ThreadPoolExecutor(max_workers=args.jobs) as ex:
         futs = {}
         for pid in ids:
             to = args.challenge_timeout if set_of[pid] == "challenge" else args.timeout
-            futs[ex.submit(run_one, pid, to)] = pid
+            futs[ex.submit(run_or_skip, pid, to)] = pid
         done = 0
         for fu in cf.as_completed(futs):
             r = fu.result()
@@ -183,7 +228,7 @@ def main():
     }
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fp:
         json.dump(summary, fp, ensure_ascii=False, indent=1)
-    full = not args.ids and wanted >= {"seen", "unseen"}
+    full = not args.ids and not args.shard and not args.out and wanted >= {"seen", "unseen"}
     if full:
         with open(latest, "w", encoding="utf-8") as fp:
             json.dump(summary, fp, ensure_ascii=False, indent=1)

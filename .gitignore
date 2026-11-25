@@ -1,4 +1,13 @@
+# ビルド成果物
 target/
 __pycache__/
-bench/runs/*/tmp/
 *.swp
+
+# 生成物（CI で毎回作る。GitHub Pages で公開）
+bench/runs/
+bench/latest.json
+reports/
+site/
+out/
+shards/
+merged/
