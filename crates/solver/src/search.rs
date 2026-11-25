@@ -1609,9 +1609,10 @@ impl Searcher {
 
     /// 右辺が同じ事実の比較: c·f(A₁) = R と c'·f(A₂) = R'（R/c = R'/c'）から f(A₁) − f(A₂) = 0 を作る
     fn same_rhs(&mut self, st: &mut BState) -> Res<()> {
-        let mut by_rhs: BTreeMap<Poly, Vec<(Fact, Q, Atom)>> = BTreeMap::new();
+        let mut by_rhs: BTreeMap<(u32, Poly), Vec<(Fact, Q, Atom)>> = BTreeMap::new();
         for &u in &st.units {
-            if self.e.nvars(u) != 2 {
+            let nv = self.e.nvars(u);
+            if nv == 0 {
                 continue;
             }
             let p = self.e.poly0(u);
@@ -1634,10 +1635,10 @@ impl Searcher {
             if r.is_zero() {
                 continue;
             }
-            by_rhs.entry(r).or_default().push((u, c, a));
+            by_rhs.entry((nv, r)).or_default().push((u, c, a));
         }
         let mut made = 0;
-        for (_, group) in by_rhs {
+        for ((nv, _), group) in by_rhs {
             if group.len() < 2 {
                 continue;
             }
@@ -1651,7 +1652,7 @@ impl Searcher {
                     continue;
                 }
                 let items = vec![(Poly::constant(Q::one() / c1), *u1, 0), (Poly::constant(-(Q::one() / c2)), *u2, 0)];
-                let nf = self.e.k.lincomb(st.b, 2, items)?;
+                let nf = self.e.k.lincomb(st.b, nv, items)?;
                 self.bump("same_rhs");
                 if let Added::New(_) = self.e.add_fact(st, nf)? {
                     made += 1;
