@@ -42,7 +42,7 @@ fn real_main() -> i32 {
         }
         "solve" => {
             let target = args.get(2).expect("問題 ID か方程式");
-            let mut timeout = 20.0;
+            let mut timeout = 60.0;
             let mut as_json = false;
             let mut proof = false;
             let mut dump = false;

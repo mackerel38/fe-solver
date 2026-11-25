@@ -44,6 +44,7 @@ pub fn solve_with(lhs: Poly, rhs: Poly, timeout: Duration, schedule: &[(f64, f64
     let start = Instant::now();
     let sched: Vec<(f64, f64)> = if schedule.is_empty() { vec![(1.0, 1.0)] } else { schedule.to_vec() };
     let mut last: Option<SolveOutput> = None;
+    let mut w_last = 1.0;
     for (i, (w, frac)) in sched.iter().enumerate() {
         let remain = (start + timeout).saturating_duration_since(Instant::now());
         if remain.is_zero() && last.is_some() {
@@ -53,6 +54,23 @@ pub fn solve_with(lhs: Poly, rhs: Poly, timeout: Duration, schedule: &[(f64, f64
         let mut out = solve_once(lhs.clone(), rhs.clone(), t, *w)?;
         out.elapsed = start.elapsed();
         out.stats.push(("width_tried".into(), (*w * 100.0) as u64));
+        if out.status == "complete" {
+            return Ok(out);
+        }
+        w_last = *w;
+        last = Some(out);
+    }
+    // 予定を終えても時間が残っていれば（探索が手詰まりで早く終わった場合）、幅を倍にして残り時間で続ける
+    let mut w = w_last;
+    loop {
+        let remain = (start + timeout).saturating_duration_since(Instant::now());
+        if remain < Duration::from_secs(2) || remain < timeout / 10 || w >= 16.0 {
+            break;
+        }
+        w *= 2.0;
+        let mut out = solve_once(lhs.clone(), rhs.clone(), remain, w)?;
+        out.elapsed = start.elapsed();
+        out.stats.push(("width_tried".into(), (w * 100.0) as u64));
         if out.status == "complete" {
             return Ok(out);
         }
