@@ -802,6 +802,32 @@ impl Searcher {
                 push(s);
             }
         }
+        // 正定値化（一般形）: f の引数が c·X² + L（c > 0、L は X を含まない定数でない式）なら
+        // X := L − 1/(2c) で c·L² + 1/(4c) にする（「X を十分大きくとる」議論の代わり）
+        for u in &atoms {
+            for sq in [0u32, 1] {
+                let xs = coeffs_in(u, &Atom::Var(sq));
+                if xs.keys().max() != Some(&2) || xs.contains_key(&1) {
+                    continue;
+                }
+                let c = match xs.get(&2).and_then(|c| c.as_const()) {
+                    Some(c) if c > Q::zero() => c,
+                    _ => continue,
+                };
+                let l = xs.get(&0).cloned().unwrap_or_else(Poly::zero);
+                if l.as_const().is_some() || l.vars().contains(&sq) {
+                    continue;
+                }
+                // X が原子の中にも現れないこと
+                if u.terms().iter().any(|(m, _)| m.factors().iter().any(|(b, _)| *b != Atom::Var(sq) && Poly::from_atom(b.clone()).vars().contains(&sq))) {
+                    continue;
+                }
+                let h = Q::one() / (Q::from_integer(2.into()) * &c);
+                let mut s = vec![x(), y()];
+                s[sq as usize] = l.sub(&Poly::constant(h));
+                push(s);
+            }
+        }
         // 係数が閉じた可逆な式（f(j) など）の場合: v := (v − w)·inv(c)
         for u in &atoms {
             for v in 0..2u32 {
