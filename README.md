@@ -28,8 +28,13 @@ cargo build --release
 ./target/release/fe_solver solve "f(x + f(y)) = x + y" # 方程式を直接（+ - * ^ 括弧, f(...), x, y, 整数）
 ./target/release/fe_solver solve FE-0004 --timeout 60  # 時間制限（秒, 既定 20）
 ./target/release/fe_solver solve FE-0004 --json        # 結果を 1 行の JSON で（--proof で証明文を標準エラーへ）
+./target/release/fe_solver solve FE-0004 --width 2    # 探索幅を固定（代入数・生成元の数などの倍率。既定は反復拡幅）
+./target/release/fe_solver solve FE-0004 --schedule 0.5:0.25,1:0.35,2:1  # 幅:時間の割合 の予定（反復拡幅）
 ./target/release/fe_solver list seen                   # 問題一覧（seen / unseen(=初見) / challenge / all）
 ```
+
+既定の探索は反復拡幅: 幅 0.5 で時間の 25%、幅 1 で 35%、幅 2 で残りを使い、それぞれ独立に解いて完全解決した時点で終える
+（環境変数 `FE_SCHEDULE="0.5:0.25,1:0.35,2:1"` でも変更できる）。
 
 出力の状態は次のいずれか。
 - **完全解決**: 解の集合と、それ以外に解がないことの証明（場合分けの木に沿った日本語の証明文と検算）
