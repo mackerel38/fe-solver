@@ -45,6 +45,8 @@ pub struct BState {
     pub invs: Vec<(Poly, Poly)>,
     /// 単射性の仮定「∀x,y. f(x) − f(y) ≠ 0 ∨ x − y = 0」
     pub inj: Option<Fact>,
+    /// 零点の補題「∀x. f(x) ≠ 0 ∨ x = 0」
+    pub zinj: Option<Fact>,
     pub cond_rules: Vec<CondRule>,
     /// 正準形の加法性「f(x+y) = f(x) + f(y) − f(0)」と、x ≥ 0 での有界性の事実
     pub additive: Option<Fact>,
@@ -68,6 +70,7 @@ impl BState {
             nes: vec![],
             invs: vec![],
             inj: None,
+            zinj: None,
             cond_rules: vec![],
             additive: None,
             bound: None,

@@ -235,6 +235,15 @@ impl Searcher {
                     return Ok(());
                 }
             }
+            if round == 2 && depth <= 3 && st.inj.is_none() && self.try_zero_injectivity(st, depth)? {
+                return Ok(());
+            }
+            if st.zinj.is_some() {
+                self.apply_zero_injectivity(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+            }
             let before = st.units.len() + st.others.len();
             let t0 = Instant::now();
             let r = self.instances(st, round);
@@ -373,6 +382,141 @@ impl Searcher {
         Ok(true)
     }
 
+    /// 零点の補題を試す: 排中律で「∀x. f(x) = 0 ⇒ x = 0」とその否定（ある k ≠ 0 で f(k) = 0）に分け、
+    /// 否定側を時間予算内に閉じられれば肯定側で続ける。閉じられなければ場合分けを取り消す。
+    fn try_zero_injectivity(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        if st.tried.contains("zinj") || st.zinj.is_some() {
+            return Ok(false);
+        }
+        st.tried.insert("zinj".into());
+        // f ≡ 0 が解なら（この枝で f(j) ≠ 0 がわかっていない限り）成り立たないので試さない
+        if self.e.k.verify_solution(&Poly::zero()).is_ok() && st.nes.is_empty() {
+            return Ok(false);
+        }
+        let c = fe_kernel::Clause::new(1, vec![Lit::ne(Poly::f(x())), Lit::eq(x())]).map_err(|e| e.to_string())?;
+        let (c0, h0, c1, hs, _consts) = self.e.k.split_em(st.b, c)?;
+        self.bump("zinj_try");
+        let saved = self.e.deadline;
+        let now = Instant::now();
+        let remain = saved.saturating_duration_since(now);
+        self.e.deadline = now + (remain / 5).min(Duration::from_secs(4));
+        let open_before = self.open.len();
+        let retry_before = self.retry.len();
+        let mut cst = st.child(c1);
+        cst.tried.insert("zinj".into());
+        cst.tried.insert("inj".into());
+        let r = (|| -> Res<()> {
+            for h in &hs {
+                self.e.add_fact(&mut cst, *h)?;
+            }
+            Ok(())
+        })();
+        match r {
+            Ok(()) => self.solve_branch(cst, depth + 1)?,
+            Err(m) if m == TIMEOUT => {}
+            Err(m) => {
+                self.e.deadline = saved;
+                return Err(m);
+            }
+        }
+        self.e.deadline = saved;
+        self.open.truncate(open_before);
+        self.retry.truncate(retry_before);
+        if !self.e.k.is_closed(c1) {
+            self.e.k.abandon_split(st.b)?;
+            return Ok(false);
+        }
+        self.bump("zinj_proved");
+        let mut c0st = st.child(c0);
+        c0st.zinj = Some(h0);
+        c0st.tried.insert("zinj".into());
+        let r = self.e.add_fact(&mut c0st, h0);
+        match r {
+            Ok(_) => self.solve_branch(c0st, depth + 1)?,
+            Err(m) if m == TIMEOUT => self.open.push((c0, TIMEOUT.into())),
+            Err(m) => return Err(m),
+        }
+        Ok(true)
+    }
+
+    /// 零点の補題から: 単位等式 c·f(s) = 0 があれば s = 0
+    fn apply_zero_injectivity(&mut self, st: &mut BState) -> Res<()> {
+        let z = match st.zinj {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+        let units = st.units.clone();
+        for u in units {
+            let p = self.e.poly0(u);
+            if p.terms().len() != 1 || p.terms()[0].0.factors().len() != 1 || p.terms()[0].0.factors()[0].1 != 1 {
+                continue;
+            }
+            let s1 = match &p.terms()[0].0.factors()[0].0 {
+                Atom::F(s1) => (**s1).clone(),
+                _ => continue,
+            };
+            if s1.is_zero() {
+                continue;
+            }
+            let key = format!("zinj|{:?}", u);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let nv = self.e.nvars(u);
+            let inst = self.e.k.instantiate(st.b, z, vec![s1.clone()], nv)?;
+            let ic = self.e.clause(inst).clone();
+            let want = Lit::ne(Poly::f(s1));
+            let li = match ic.lits().iter().position(|l| *l == want) {
+                Some(i) => i,
+                None => continue,
+            };
+            let r = self.e.k.resolve(st.b, inst, li, u, 0)?;
+            self.bump("zinj_apply");
+            self.e.add_fact(st, r)?;
+            if self.closed(st) {
+                return Ok(());
+            }
+        }
+        // 選言の中のリテラル c·f(s) = 0 にも使う: C ∨ f(s) = 0 から C ∨ s = 0
+        let others = st.others.clone();
+        for o in others {
+            let c = self.e.clause(o).clone();
+            if c.lits().len() < 2 || c.nvars() > 2 {
+                continue;
+            }
+            for (i, l) in c.lits().iter().enumerate() {
+                let p = l.poly();
+                if l.rel() != Rel::Eq || p.terms().len() != 1 || p.terms()[0].0.factors().len() != 1 || p.terms()[0].0.factors()[0].1 != 1 {
+                    continue;
+                }
+                let s1 = match &p.terms()[0].0.factors()[0].0 {
+                    Atom::F(s1) if !s1.is_zero() => (**s1).clone(),
+                    _ => continue,
+                };
+                let key = format!("zinjc|{:?}|{}", o, i);
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let inst = self.e.k.instantiate(st.b, z, vec![s1.clone()], c.nvars())?;
+                let ic = self.e.clause(inst).clone();
+                let want = Lit::ne(Poly::f(s1));
+                let li = match ic.lits().iter().position(|l| *l == want) {
+                    Some(j) => j,
+                    None => continue,
+                };
+                let r = self.e.k.resolve(st.b, inst, li, o, i)?;
+                self.bump("zinj_apply_clause");
+                st.others.retain(|x| *x != o);
+                self.e.add_fact(st, r)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+                break;
+            }
+        }
+        Ok(())
+    }
+
     /// 単射性から: 単位等式 c(f(s) − f(t)) = 0 があれば s − t = 0
     fn apply_injectivity(&mut self, st: &mut BState) -> Res<()> {
         let inj = match st.inj {
@@ -412,6 +556,47 @@ impl Searcher {
             self.e.add_fact(st, r)?;
             if self.closed(st) {
                 return Ok(());
+            }
+        }
+        // 選言の中のリテラル c(f(s) − f(t)) = 0 にも使う
+        let others = st.others.clone();
+        for o in others {
+            let c = self.e.clause(o).clone();
+            if c.lits().len() < 2 || c.nvars() > 2 {
+                continue;
+            }
+            for (i, l) in c.lits().iter().enumerate() {
+                let p = l.poly();
+                if l.rel() != Rel::Eq || p.terms().len() != 2 {
+                    continue;
+                }
+                let (m1, c1) = &p.terms()[0];
+                let (m2, c2) = &p.terms()[1];
+                if *c1 != -c2.clone() || m1.factors().len() != 1 || m2.factors().len() != 1 || m1.factors()[0].1 != 1 || m2.factors()[0].1 != 1 {
+                    continue;
+                }
+                let (s1, s2) = match (&m1.factors()[0].0, &m2.factors()[0].0) {
+                    (Atom::F(a), Atom::F(b)) => ((**a).clone(), (**b).clone()),
+                    _ => continue,
+                };
+                let key = format!("injc|{:?}|{}", o, i);
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let inst = self.e.k.instantiate(st.b, inj, vec![s1.clone(), s2.clone()], c.nvars())?;
+                let want = Lit::ne(Poly::f(s1).sub(&Poly::f(s2)));
+                let li = match self.e.clause(inst).lits().iter().position(|l| *l == want) {
+                    Some(j) => j,
+                    None => continue,
+                };
+                let r = self.e.k.resolve(st.b, inst, li, o, i)?;
+                self.bump("inj_apply_clause");
+                st.others.retain(|x| *x != o);
+                self.e.add_fact(st, r)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+                break;
             }
         }
         Ok(())
