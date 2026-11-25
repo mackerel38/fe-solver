@@ -281,6 +281,10 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            self.same_rhs(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             let t0 = Instant::now();
             let r = self.eliminate2(st);
             self.add_time("t_elim2", t0);
@@ -1577,6 +1581,63 @@ impl Searcher {
                     if self.closed(st) {
                         return Ok(());
                     }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 右辺が同じ事実の比較: c·f(A₁) = R と c'·f(A₂) = R'（R/c = R'/c'）から f(A₁) − f(A₂) = 0 を作る
+    fn same_rhs(&mut self, st: &mut BState) -> Res<()> {
+        let mut by_rhs: BTreeMap<Poly, Vec<(Fact, Q, Atom)>> = BTreeMap::new();
+        for &u in &st.units {
+            if self.e.nvars(u) != 2 {
+                continue;
+            }
+            let p = self.e.poly0(u);
+            // 変数を含む f の原子がちょうど 1 つ、単独の項として現れる
+            let mut lhs: Option<(Atom, Q)> = None;
+            let mut count = 0;
+            for (m, c) in p.terms() {
+                if m.factors().iter().any(|(a, _)| matches!(a, Atom::F(_)) && a.has_var()) {
+                    count += 1;
+                    if m.factors().len() == 1 && m.factors()[0].1 == 1 {
+                        lhs = Some((m.factors()[0].0.clone(), c.clone()));
+                    }
+                }
+            }
+            let (a, c) = match (lhs, count) {
+                (Some(t), 1) => t,
+                _ => continue,
+            };
+            let r = Poly::from_atom(a.clone()).sub(&p.scale(&(Q::one() / &c)));
+            if r.is_zero() {
+                continue;
+            }
+            by_rhs.entry(r).or_default().push((u, c, a));
+        }
+        let mut made = 0;
+        for (_, group) in by_rhs {
+            if group.len() < 2 {
+                continue;
+            }
+            let (u1, c1, a1) = &group[0];
+            for (u2, c2, a2) in &group[1..] {
+                if a1 == a2 || made >= 4 {
+                    continue;
+                }
+                let key = format!("srhs|{:?}|{:?}", u1, u2);
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let items = vec![(Poly::constant(Q::one() / c1), *u1, 0), (Poly::constant(-(Q::one() / c2)), *u2, 0)];
+                let nf = self.e.k.lincomb(st.b, 2, items)?;
+                self.bump("same_rhs");
+                if let Added::New(_) = self.e.add_fact(st, nf)? {
+                    made += 1;
+                }
+                if self.closed(st) {
+                    return Ok(());
                 }
             }
         }
