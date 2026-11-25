@@ -66,6 +66,7 @@ pub enum Rule {
     Weaken { premise: Fact, extra: Vec<Lit> },
     Merge { parent: BranchId, facts: Vec<Option<Fact>> },
     CauchyBounded { additive: Fact, bound: Fact },
+    ImportLemma { premise: Fact, lemma: std::rc::Rc<Kernel> },
 }
 
 #[derive(Clone, Debug)]
@@ -188,6 +189,7 @@ pub struct Conclusion {
     pub open_leaves: Vec<BranchId>,
 }
 
+#[derive(Debug)]
 pub struct Kernel {
     id: u64,
     lhs: Poly,
@@ -745,6 +747,81 @@ impl Kernel {
         let g = Poly::f(Poly::one()).sub(&f0).mul(&x).add(&f0);
         let out = Clause::new(1, vec![Lit::eq(Poly::f(x).sub(&g))])?;
         Ok(self.push(out, target, Rule::CauchyBounded { additive, bound }))
+    }
+
+    /// 規則 ImportLemma（補題として解いた方程式への帰着）:
+    /// 別の検証核 L が方程式 E' を公理として完全解決しており（すべての葉が閉じるか解の形が確定）、
+    /// この枝の事実 premise の節が E' の公理の節と厳密に一致するなら、L の各葉の解の形 f(x) = g_i(x) を
+    /// 変数を分けて並べた選言「∀x₁,…,x_k. f(x₁) = g₁(x₁) ∨ … ∨ f(x_k) = g_k(x_k)」が成り立つ。
+    /// g_i は f の値などの閉じた原子を含んでよいが、L で導入された定数を含んではならない。区分的な解の葉は扱わない。
+    /// 根拠: L の場合分けは網羅的なので、E' を満たす任意の f はある葉の仮定を満たし（定数は適当に選べる）、
+    /// その葉の事実 ∀x. f(x) = g_i(x) が成り立つ。g_i は L の定数を含まないので f だけについての主張である。
+    /// premise により f はこの枝で E' を満たす。
+    pub fn import_lemma(&mut self, target: BranchId, premise: Fact, lemma: std::rc::Rc<Kernel>) -> R<Fact> {
+        self.check_branch(target)?;
+        if lemma.id == self.id {
+            return Err("自分自身を補題にはできない".into());
+        }
+        let c = self.premise(premise, target)?.clone();
+        let lax = lemma.clause(lemma.axiom).clone();
+        if c != lax {
+            return Err("事実が補題の方程式と一致しない".into());
+        }
+        let concl = lemma.conclude();
+        if !concl.complete {
+            return Err("補題が完全解決していない".into());
+        }
+        if !concl.pw_families.is_empty() {
+            return Err("区分的な解をもつ補題は扱わない".into());
+        }
+        // 閉じていない葉の解の事実を集める
+        let mut gs: Vec<Poly> = Vec::new();
+        let mut stack = vec![ROOT];
+        while let Some(b) = stack.pop() {
+            if lemma.is_closed(b) {
+                continue;
+            }
+            let r = lemma.branch(b);
+            if r.children.is_empty() {
+                let (f, _) = r.solution.as_ref().ok_or("解の確定していない葉がある")?;
+                let lc = lemma.clause(*f);
+                // ∀x. f(x) − g = 0（保存形は正規化済み）から g を取り出す
+                if lc.nvars() != 1 || lc.lits().len() != 1 || lc.lits()[0].rel() != Rel::Eq {
+                    return Err("葉の事実の形が違う".into());
+                }
+                let fx = Poly::f(Poly::var(0));
+                let fxa = Atom::F(std::rc::Rc::new(Poly::var(0)));
+                let p = lc.lits()[0].poly();
+                let lam = p
+                    .terms()
+                    .iter()
+                    .find(|(m, _)| m.factors().len() == 1 && m.factors()[0] == (fxa.clone(), 1))
+                    .map(|(_, c)| c.clone())
+                    .ok_or("葉の事実に f(x) がない")?;
+                let g = fx.sub(&p.scale(&(Q::one() / lam)));
+                if g.top_atoms().contains(&fxa) {
+                    return Err("葉の事実の形が違う".into());
+                }
+                if !g.consts().is_empty() {
+                    return Err("葉の解の式が補題の定数を含む".into());
+                }
+                if !gs.contains(&g) {
+                    gs.push(g);
+                }
+            } else {
+                stack.extend(r.children.iter().copied());
+            }
+        }
+        let k = gs.len() as u32;
+        let mut lits = Vec::new();
+        for (i, g) in gs.iter().enumerate() {
+            let mut s = vec![Poly::zero(); k.max(1) as usize];
+            s[0] = Poly::var(i as u32);
+            let gi = g.subst_vars(&s);
+            lits.push(Lit::eq(Poly::f(Poly::var(i as u32)).sub(&gi)));
+        }
+        let out = Clause::new(k, lits)?;
+        Ok(self.push(out, target, Rule::ImportLemma { premise, lemma }))
     }
 
     // ------------------------------------------------------------------

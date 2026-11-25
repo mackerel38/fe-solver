@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 pub struct Searcher {
     pub e: Engine,
+    /// 帰着（補題として別に解く）の入れ子の深さ
+    pub reduce_depth: u32,
     /// 探索幅（1.0 が標準）。代入数・生成元の数などをこの倍率で増減する
     pub width: f64,
     pub round_budget: usize,
@@ -109,7 +111,7 @@ pub enum Fin {
 
 impl Searcher {
     pub fn new(e: Engine) -> Searcher {
-        Searcher { e, width: 1.0, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new() }
+        Searcher { e, reduce_depth: 0, width: 1.0, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new() }
     }
 
     fn add_time(&mut self, k: &str, t0: Instant) {
@@ -236,6 +238,9 @@ impl Searcher {
                 }
             }
             if round == 2 && depth <= 3 && st.inj.is_none() && self.try_zero_injectivity(st, depth)? {
+                return Ok(());
+            }
+            if round >= 4 && depth <= 3 && self.reduce_depth == 0 && self.solution_rule(st).is_none() && self.try_reduction(st, depth)? {
                 return Ok(());
             }
             if st.zinj.is_some() {
@@ -380,6 +385,79 @@ impl Searcher {
             Err(m) => return Err(m),
         }
         Ok(true)
+    }
+
+    /// 帰着: 導いた 2 変数の等式を新しい方程式として別に解き、完全解決すれば ImportLemma で取り込む
+    fn try_reduction(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        let ax = self.e.k.axiom();
+        let ax_size = poly_size(&self.e.poly0(ax));
+        let ax_clause = self.e.clause(ax).clone();
+        let mut cands: Vec<Fact> = st
+            .units
+            .iter()
+            .copied()
+            .filter(|u| {
+                let c = self.e.clause(*u);
+                let p = c.lits()[0].poly();
+                c.nvars() == 2 && p.vars().len() == 2 && p.has_f() && poly_size(p) <= ax_size && *c != ax_clause
+            })
+            .collect();
+        cands.sort_by_key(|u| poly_size(&self.e.poly0(*u)));
+        let mut attempts = 0;
+        for u in cands {
+            if attempts >= 1 {
+                break;
+            }
+            let p = self.e.poly0(u);
+            let key = format!("reduce|{:x}", hash_poly(&p));
+            if !st.tried.insert(key) {
+                continue;
+            }
+            // x↔y 入れ替えで同じものも試さない
+            st.tried.insert(format!("reduce|{:x}", hash_poly(&crate::engine::swap_xy(&p).monic())));
+            attempts += 1;
+            let now = Instant::now();
+            let remain = self.e.deadline.saturating_duration_since(now);
+            let budget = (remain / 6).min(Duration::from_secs(3));
+            if budget < Duration::from_millis(200) {
+                return Ok(false);
+            }
+            let lk = match Kernel::new(p.clone(), Poly::zero()) {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
+            let mut sub = Searcher::new(Engine::new(lk, now + budget));
+            sub.reduce_depth = self.reduce_depth + 1;
+            sub.width = self.width;
+            {
+                let ax2 = sub.e.k.axiom();
+                let sz = poly_size(sub.e.k.clause(ax2).lits()[0].poly());
+                sub.e.size_cap = (2 * sz).max(60);
+            }
+            let ok = sub.solve_root().is_ok() && sub.retry_timeouts(now + budget).is_ok();
+            self.bump("reduce_try");
+            if !ok {
+                continue;
+            }
+            let concl = sub.e.k.conclude();
+            if !concl.complete || !concl.pw_families.is_empty() {
+                continue;
+            }
+            let lemma = std::rc::Rc::new(sub.e.k);
+            let r = match self.e.k.import_lemma(st.b, u, lemma) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            self.bump("reduce_import");
+            if self.e.clause(r).lits().len() >= 2 {
+                let children = self.e.k.split_components(st.b, r)?;
+                self.run_children(st, children, depth)?;
+                return Ok(true);
+            }
+            self.e.add_fact(st, r)?;
+            return Ok(false);
+        }
+        Ok(false)
     }
 
     /// 零点の補題を試す: 排中律で「∀x. f(x) = 0 ⇒ x = 0」とその否定（ある k ≠ 0 で f(k) = 0）に分け、

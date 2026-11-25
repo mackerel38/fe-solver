@@ -550,3 +550,36 @@ fn cauchy_bounded_rule() {
     let (g0, hg, _, _, _) = k.split_em(e0, cl(2, vec![Lit::eq(f(x().add(&y())).sub(&f(x())).sub(&f(y())))])).unwrap();
     assert!(k.cauchy_bounded(g0, hg, hb).is_err(), "f(0) の項がない形は受け付けない");
 }
+
+#[test]
+fn import_lemma_rule() {
+    use std::rc::Rc;
+    // 補題: f(x + y) = x + f(y) の解は f(x) = x + f(0)
+    let mut l = Kernel::new(f(x().add(&y())), x().add(&f(y()))).unwrap();
+    let la = l.axiom();
+    let p = l.instantiate(ROOT, la, vec![x(), c(0)], 1).unwrap();
+    let fam = l.verify_solution(&x().add(&f(c(0)))).unwrap();
+    l.mark_solution(ROOT, p, fam).unwrap();
+    assert!(l.conclude().complete);
+    let l = Rc::new(l);
+    // 本体: 同じ方程式の事実（公理）から取り込む
+    let mut k = Kernel::new(f(x().add(&y())), x().add(&f(y()))).unwrap();
+    let ka = k.axiom();
+    let r = k.import_lemma(ROOT, ka, l.clone()).unwrap();
+    assert_eq!(*k.clause(r), cl(1, vec![Lit::eq(f(x()).sub(&x()).sub(&f(c(0))))]));
+    // 方程式が一致しない事実からは取り込めない
+    let other = k.instantiate(ROOT, ka, vec![x(), x()], 2).unwrap();
+    assert!(k.import_lemma(ROOT, other, l.clone()).is_err());
+    // 完全解決していない補題は使えない
+    let l2 = Rc::new(Kernel::new(f(x().add(&y())), x().add(&f(y()))).unwrap());
+    assert!(k.import_lemma(ROOT, ka, l2).is_err());
+    // 自分自身は補題にできない（別の Rc でも id で判定）
+    let mut k3 = Kernel::new(f(x().add(&y())), x().add(&f(y()))).unwrap();
+    let k3a = k3.axiom();
+    let _ = k3.instantiate(ROOT, k3a, vec![x(), c(0)], 1).unwrap();
+    // 複数の葉（0 と x）: f(xy) = x f(y) ではなく f(x)f(y) = f(xy) 型の代わりに、場合分けで 2 つの葉を作る
+    let mut l3 = Kernel::new(f(x().add(&f(y()))), f(x()).add(&f(y()))).unwrap();
+    let (c0, h0, c1, h1s, _) = l3.split_em(ROOT, cl(1, vec![Lit::eq(f(x()))])).unwrap();
+    let _ = (c0, h0, c1, h1s);
+    assert!(!l3.conclude().complete);
+}

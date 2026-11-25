@@ -270,6 +270,7 @@ fn premises(r: &Rule) -> Vec<Fact> {
         }
         Rule::Merge { facts, .. } => facts.iter().flatten().copied().collect(),
         Rule::CauchyBounded { additive, bound } => vec![*additive, *bound],
+        Rule::ImportLemma { premise, .. } => vec![*premise],
     }
 }
 
@@ -460,6 +461,11 @@ impl<'a> Ctx<'a> {
                 "{} より g(x) = f(x) − f(0) は加法的、{} より g は x ≥ 0 で片側に有界なので（コーシーの方程式）",
                 self.lbl(*additive),
                 self.lbl(*bound)
+            ),
+            Rule::ImportLemma { premise, lemma } => format!(
+                "{} は方程式 {} であり、補題として解くと（下の【補題】）解は次に限るので",
+                self.lbl(*premise),
+                fmt_equation(lemma)
             ),
             Rule::Merge { facts, .. } => {
                 let fs: Vec<String> = facts.iter().flatten().map(|f| self.lbl(*f)).collect();
@@ -733,6 +739,20 @@ pub fn render(k: &Kernel, concl: &Conclusion) -> String {
                 fmt_poly(&r, &np)
             );
         }
+    }
+    // 使った補題の証明
+    let mut lemmas: Vec<std::rc::Rc<Kernel>> = Vec::new();
+    for f in &need {
+        if let Rule::ImportLemma { lemma, .. } = k.fact(*f).rule() {
+            if !lemmas.iter().any(|l| std::rc::Rc::ptr_eq(l, lemma)) {
+                lemmas.push(lemma.clone());
+            }
+        }
+    }
+    for (i, l) in lemmas.iter().enumerate() {
+        let _ = writeln!(ctx.out, "\n【補題 {}】", i + 1);
+        let c = l.conclude();
+        ctx.out.push_str(&render(l, &c));
     }
     ctx.out
 }
