@@ -1003,6 +1003,14 @@ impl Engine {
         }
         st.keys.insert(key);
         if c.lits().len() == 1 && c.lits()[0].rel() == Rel::Eq {
+            // 左辺が f(a·x+b) で右辺が x の f を含まない規則は、f(x) の形に直してから入れる
+            if let Some(r2) = self.extract_rule(u2) {
+                if let Some(sub) = affine_lhs_normalizer(&r2) {
+                    let g = self.k.instantiate(st.b, u2, vec![sub], 1)?;
+                    self.add_fact(st, g)?;
+                    return Ok(None);
+                }
+            }
             st.units.push(u2);
             if let Some(r2) = self.extract_rule(u2) {
                 st.rules.push(r2.clone());

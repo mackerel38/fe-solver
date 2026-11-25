@@ -1219,20 +1219,36 @@ impl Searcher {
             if c.nvars() != 1 || c.lits().len() < 2 || c.lits().iter().any(|l| l.rel() != Rel::Eq) {
                 continue;
             }
+            let fmx = Atom::F(std::rc::Rc::new(x().neg()));
             let mut gs = Vec::new();
             for l in c.lits() {
                 let p = l.poly();
-                let cf = match coeff_of_atom(p, &fx) {
-                    Some(c) => c,
-                    None => break,
+                // f(x) − g(x) の形、または f(−x) − h(x) の形（このとき候補は g(t) = h(−t)）
+                let (atom, reflect) = if coeff_of_atom(p, &fx).is_some() && !p.top_atoms().contains(&fmx) {
+                    (fx.clone(), false)
+                } else if coeff_of_atom(p, &fmx).is_some() && !p.top_atoms().contains(&fx) {
+                    (fmx.clone(), true)
+                } else {
+                    break;
                 };
-                let g = Poly::f(x()).sub(&p.scale(&(Q::one() / cf)));
-                if !f_atoms_with_vars(&g).is_empty() || g.top_atoms().contains(&fx) {
+                let cf = coeff_of_atom(p, &atom).unwrap();
+                let h = Poly::from_atom(atom.clone()).sub(&p.scale(&(Q::one() / cf)));
+                if !f_atoms_with_vars(&h).is_empty() || h.top_atoms().contains(&atom) {
                     break;
                 }
-                gs.push(g);
+                let g = if reflect { h.subst_vars(&[x().neg()]) } else { h };
+                if !gs.contains(&g) {
+                    gs.push(g);
+                }
             }
-            if gs.len() == c.lits().len() {
+            if gs.len() < 1 {
+                continue;
+            }
+            let ok = c.lits().iter().all(|l| {
+                let p = l.poly();
+                coeff_of_atom(p, &fx).is_some() || coeff_of_atom(p, &fmx).is_some()
+            });
+            if ok && gs.len() >= 1 && c.lits().len() >= 2 {
                 out.push((f, gs));
             }
         }
@@ -1275,8 +1291,10 @@ impl Searcher {
                     self.e.add_fact(&mut s1, *h)?;
                 }
                 let a = Poly::cnst(consts[0]);
-                let inst = self.e.k.instantiate(c1, cf, vec![a], 0)?;
+                let inst = self.e.k.instantiate(c1, cf, vec![a.clone()], 0)?;
                 self.e.add_fact(&mut s1, inst)?;
+                let inst2 = self.e.k.instantiate(c1, cf, vec![a.neg()], 0)?;
+                self.e.add_fact(&mut s1, inst2)?;
                 Ok(())
             })();
             match r {
@@ -1322,6 +1340,8 @@ impl Searcher {
                 self.bump("pointwise_inst");
                 self.e.add_fact(st, inst)?;
                 made += 1;
+                let inst2 = self.e.k.instantiate(st.b, cf, vec![k.neg()], 0)?;
+                self.e.add_fact(st, inst2)?;
             }
         }
         Ok(())
