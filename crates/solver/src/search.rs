@@ -477,43 +477,6 @@ impl Searcher {
                 return Ok(());
             }
         }
-        // 選言の中のリテラル c·f(s) = 0 にも使う: C ∨ f(s) = 0 から C ∨ s = 0
-        let others = st.others.clone();
-        for o in others {
-            let c = self.e.clause(o).clone();
-            if c.lits().len() < 2 || c.nvars() > 2 {
-                continue;
-            }
-            for (i, l) in c.lits().iter().enumerate() {
-                let p = l.poly();
-                if l.rel() != Rel::Eq || p.terms().len() != 1 || p.terms()[0].0.factors().len() != 1 || p.terms()[0].0.factors()[0].1 != 1 {
-                    continue;
-                }
-                let s1 = match &p.terms()[0].0.factors()[0].0 {
-                    Atom::F(s1) if !s1.is_zero() => (**s1).clone(),
-                    _ => continue,
-                };
-                let key = format!("zinjc|{:?}|{}", o, i);
-                if !st.tried.insert(key) {
-                    continue;
-                }
-                let inst = self.e.k.instantiate(st.b, z, vec![s1.clone()], c.nvars())?;
-                let ic = self.e.clause(inst).clone();
-                let want = Lit::ne(Poly::f(s1));
-                let li = match ic.lits().iter().position(|l| *l == want) {
-                    Some(j) => j,
-                    None => continue,
-                };
-                let r = self.e.k.resolve(st.b, inst, li, o, i)?;
-                self.bump("zinj_apply_clause");
-                st.others.retain(|x| *x != o);
-                self.e.add_fact(st, r)?;
-                if self.closed(st) {
-                    return Ok(());
-                }
-                break;
-            }
-        }
         Ok(())
     }
 
@@ -556,47 +519,6 @@ impl Searcher {
             self.e.add_fact(st, r)?;
             if self.closed(st) {
                 return Ok(());
-            }
-        }
-        // 選言の中のリテラル c(f(s) − f(t)) = 0 にも使う
-        let others = st.others.clone();
-        for o in others {
-            let c = self.e.clause(o).clone();
-            if c.lits().len() < 2 || c.nvars() > 2 {
-                continue;
-            }
-            for (i, l) in c.lits().iter().enumerate() {
-                let p = l.poly();
-                if l.rel() != Rel::Eq || p.terms().len() != 2 {
-                    continue;
-                }
-                let (m1, c1) = &p.terms()[0];
-                let (m2, c2) = &p.terms()[1];
-                if *c1 != -c2.clone() || m1.factors().len() != 1 || m2.factors().len() != 1 || m1.factors()[0].1 != 1 || m2.factors()[0].1 != 1 {
-                    continue;
-                }
-                let (s1, s2) = match (&m1.factors()[0].0, &m2.factors()[0].0) {
-                    (Atom::F(a), Atom::F(b)) => ((**a).clone(), (**b).clone()),
-                    _ => continue,
-                };
-                let key = format!("injc|{:?}|{}", o, i);
-                if !st.tried.insert(key) {
-                    continue;
-                }
-                let inst = self.e.k.instantiate(st.b, inj, vec![s1.clone(), s2.clone()], c.nvars())?;
-                let want = Lit::ne(Poly::f(s1).sub(&Poly::f(s2)));
-                let li = match self.e.clause(inst).lits().iter().position(|l| *l == want) {
-                    Some(j) => j,
-                    None => continue,
-                };
-                let r = self.e.k.resolve(st.b, inst, li, o, i)?;
-                self.bump("inj_apply_clause");
-                st.others.retain(|x| *x != o);
-                self.e.add_fact(st, r)?;
-                if self.closed(st) {
-                    return Ok(());
-                }
-                break;
             }
         }
         Ok(())
