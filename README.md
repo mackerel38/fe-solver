@@ -13,7 +13,6 @@
 | `scripts/fetch_data.py` | 問題データの取得（`data/problems.json`, `data/source.json`） |
 | `scripts/make_split.py` | 評価・初見・挑戦セットの分割（`data/split.json` に固定済み） |
 | `scripts/bench.py` | ベンチマーク（全問並列・時間制限・前回との差分・テスト実行） |
-| `DECISIONS.md` / `QUESTIONS.md` / `PROGRESS.md` | 設計判断・質問・進捗 |
 
 ## ビルド
 
@@ -89,4 +88,4 @@ cargo test --release --workspace
 - 式の同一性は有理数係数の多項式の正規形の一致で判定（浮動小数点・乱数は使わない）。
 - 解であることの確認も、f に候補を代入した恒等式の厳密な記号計算で行う。
 - 場合分けは網羅的なもの（変数を共有しない選言・排中律）だけで、「各点で x か −x」を全体の場合分けにはできない。
-- 詳細は `DECISIONS.md` の D5 以降と `crates/kernel/src/kernel.rs` のコメント。
+- 各推論規則が正しい根拠は `crates/kernel/src/kernel.rs` のコメントに書いてある。
