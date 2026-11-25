@@ -218,6 +218,9 @@ impl Searcher {
             if round == 1 && depth < self.max_depth && self.zero_split(st, depth)? {
                 return Ok(());
             }
+            if round == 2 && depth <= 2 && self.identity_split(st, depth)? {
+                return Ok(());
+            }
             if round == 2 && depth <= 2 && std::env::var("FE_NO_INJ").is_err() && self.try_injectivity(st, depth)? {
                 return Ok(());
             }
@@ -604,6 +607,38 @@ impl Searcher {
             }
         }
         Ok(())
+    }
+
+    /// 恒等関数の候補による場合分け: 「∀x. f(x) = x」か「ある a で f(a) ≠ a」か（排中律）。
+    /// 後者では点 a と f(a) − a ≠ 0（逆数）を代入・約分に使う。
+    fn identity_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        if st.tried.contains("id_split") || self.solution_rule(st).is_some() {
+            return Ok(false);
+        }
+        st.tried.insert("id_split".into());
+        let c = fe_kernel::Clause::new(1, vec![Lit::eq(Poly::f(x()).sub(&x()))]).map_err(|e| e.to_string())?;
+        let (c0, h0, c1, hs, _consts) = self.e.k.split_em(st.b, c)?;
+        self.bump("id_split");
+        let children = vec![(c0, h0), (c1, hs[0])];
+        // 子 0 は f(x) = x なのですぐ終わる。子 1 に残り時間のほとんどが回る
+        let mut ch = children.into_iter();
+        let (b0, h0) = ch.next().unwrap();
+        let mut s0 = st.child(b0);
+        s0.tried.insert("id_split".into());
+        match self.e.add_fact(&mut s0, h0) {
+            Ok(_) => self.solve_branch(s0, depth + 1)?,
+            Err(m) if m == TIMEOUT => self.open.push((b0, TIMEOUT.into())),
+            Err(m) => return Err(m),
+        }
+        let (b1, h1) = ch.next().unwrap();
+        let mut s1 = st.child(b1);
+        s1.tried.insert("id_split".into());
+        match self.e.add_fact(&mut s1, h1) {
+            Ok(_) => self.solve_branch(s1, depth + 1)?,
+            Err(m) if m == TIMEOUT => self.open.push((b1, TIMEOUT.into())),
+            Err(m) => return Err(m),
+        }
+        Ok(true)
     }
 
     /// 代入候補にする特別な点: 枝の定数（スコーレム定数）と、f の値が定数とわかっている閉じた点
