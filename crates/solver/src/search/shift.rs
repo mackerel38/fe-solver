@@ -1,0 +1,315 @@
+//! 平行移動型の推論（f(x + T(y)) = f(x) + S(y) の型など）と、f の値で決まる量・条件つき単射性（docs/TACTICS.md）
+#![allow(unused_imports)]
+
+use crate::engine::{coeff_of_atom, replace_atom, Added, BState, Engine, Res, RwRule, TIMEOUT};
+use crate::order::{atom_cmp, poly_size};
+use crate::polyutil::*;
+use fe_kernel::{AddFamily, AddKind, Atom, BranchId, Fact, Family, Kernel, Lit, Mono, Poly, Rel, Q};
+use num_traits::{One, Zero};
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
+use super::util::*;
+use super::{Fin, Searcher};
+
+impl Searcher {
+    /// この枝で加法性（f(x+y) = f(x) + f(y) − f(0)）が示されていて、加法的な族が解なら、葉を加法的な族で確定する。
+    /// 族が A（定数なし）のときは、f(0) = 0 を書き換え規則で示して f(x+y) = f(x) + f(y) の形にする。
+    /// 平行移動の事実「∀x,y. f(x + A(y)) − f(x) − B(y) = 0」（A, B は x を含まない）から、
+    /// 「ずらし幅が同じなら増分も同じ」: ∀y,z. A(y) − A(z) ≠ 0 ∨ B(y) − B(z) = 0 と、その z = 0 の場合を作る。
+    /// 作り方（すべて検証核の規則）: 排中律 A(y) − A(z) = 0 ∨ ≠ 0、合同性 f(x + A(z) + (A(y) − A(z))) = f(x + A(z)) ∨ ≠、
+    /// 一次結合で f(x + A(y)) − f(x + A(z)) と元の事実 2 つから x を消す。
+    pub(crate) fn shift_lemmas(&mut self, st: &mut BState) -> Res<()> {
+        let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+        for u in units {
+            if self.closed(st) {
+                return Ok(());
+            }
+            let p = self.e.poly0(u);
+            for xv in 0..2u32 {
+                let yv = 1 - xv;
+                let xa = Atom::F(std::rc::Rc::new(Poly::var(xv)));
+                // f(x) の係数が −1 になるよう正規化
+                let c = match coeff_of_atom(&p, &xa) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                let pn = p.scale(&(-Q::one() / &c));
+                // x を含む原子は f(x) と f(x + A) の 2 つだけで、f(x + A) の係数は 1
+                let mut shift: Option<Poly> = None;
+                let mut ok = true;
+                for a in pn.top_atoms() {
+                    if a == xa || !Poly::from_atom(a.clone()).vars().contains(&xv) {
+                        continue;
+                    }
+                    match &a {
+                        Atom::F(arg) if shift.is_none() => {
+                            let d = (**arg).sub(&Poly::var(xv));
+                            if d.vars().contains(&xv) || coeff_of_atom(&pn, &a) != Some(Q::one()) {
+                                ok = false;
+                                break;
+                            }
+                            shift = Some(d);
+                        }
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                let a_y = match (ok, shift) {
+                    (true, Some(d)) if d.vars().contains(&yv) => d,
+                    _ => continue,
+                };
+                // B(y) = f(x + A) − f(x) − pn の残り（x を含まないこと）
+                let fa = Poly::f(Poly::var(xv).add(&a_y));
+                let b_y = fa.sub(&Poly::f(Poly::var(xv))).sub(&pn);
+                if b_y.vars().contains(&xv) {
+                    continue;
+                }
+                let key = format!("shiftlem|{:?}|{}", u, xv);
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                self.bump("shift_lemma");
+                // 変数: x = xv, y = yv, z = Var(2)
+                let zv = Poly::var(2);
+                let mut sz = vec![Poly::var(0), Poly::var(1)];
+                sz[yv as usize] = zv.clone();
+                let a_z = a_y.subst_vars(&{
+                    let mut t = vec![Poly::var(0), Poly::var(1), Poly::var(2)];
+                    t[yv as usize] = zv.clone();
+                    t
+                });
+                let b = st.b;
+                let uz = self.e.k.instantiate(b, u, sz.clone(), 3)?;
+                let diff = a_y.sub(&a_z);
+                let eo = self.e.k.eq_or_ne(b, 3, diff.clone())?;
+                let (ie, ke) = match find_lit(self.e.clause(eo), &diff) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let base = Poly::var(xv).add(&a_z);
+                let cg = self.e.k.congruence(b, 3, base.clone(), vec![(Poly::constant(Q::one() / &ke), eo, ie)])?;
+                let target = fa.sub(&Poly::f(base));
+                let (ic, kc) = match find_lit(self.e.clause(cg), &target) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                // u の保存形 = λ·pn、uz の保存形 = λ·pn(y → z)
+                let lam_u = match scale_ratio(&self.e.poly0(u), &pn) {
+                    Some(k) => k,
+                    None => continue,
+                };
+                let pnz = {
+                    let mut t = vec![Poly::var(0), Poly::var(1), Poly::var(2)];
+                    t[yv as usize] = zv.clone();
+                    pn.subst_vars(&t)
+                };
+                let lam_z = match scale_ratio(&self.e.poly0(uz), &pnz) {
+                    Some(k) => k,
+                    None => continue,
+                };
+                // pn − pnz − (f(x + A(y)) − f(x + A(z))) = −B(y) + B(z)
+                let items = vec![
+                    (Poly::constant(Q::one() / &lam_u), u, 0),
+                    (Poly::constant(-Q::one() / &lam_z), uz, 0),
+                    (Poly::constant(-Q::one() / &kc), cg, ic),
+                ];
+                let lem = self.e.k.lincomb(b, 3, items)?;
+                let lem = self.e.canon_vars(st, lem)?;
+                self.e.add_fact(st, lem)?;
+                // 周期の補題: x := x − A(−y) で y と −y の例を引くと
+                //   f(x + A(y) − A(−y)) − f(x) − (B(y) − B(−y)) = 0（B が偶なら A(y) − A(−y) は周期）
+                {
+                    let mut neg = vec![Poly::var(0), Poly::var(1)];
+                    neg[yv as usize] = Poly::var(yv).neg();
+                    let a_neg = a_y.subst_vars(&neg);
+                    let b_neg = b_y.subst_vars(&neg);
+                    let mut s1 = vec![Poly::var(0), Poly::var(1)];
+                    s1[xv as usize] = Poly::var(xv).sub(&a_neg);
+                    let mut s2 = s1.clone();
+                    s2[yv as usize] = Poly::var(yv).neg();
+                    let i1 = self.e.k.instantiate(b, u, s1.clone(), 2)?;
+                    let i2 = self.e.k.instantiate(b, u, s2.clone(), 2)?;
+                    let e1 = pn.subst_vars(&s1);
+                    let e2 = pn.subst_vars(&s2);
+                    if let (Some(k1), Some(k2)) = (scale_ratio(&self.e.poly0(i1), &e1), scale_ratio(&self.e.poly0(i2), &e2)) {
+                        let per = self.e.k.lincomb(
+                            b,
+                            2,
+                            vec![(Poly::constant(Q::one() / &k1), i1, 0), (Poly::constant(-Q::one() / &k2), i2, 0)],
+                        )?;
+                        let _ = b_neg;
+                        self.bump("shift_period");
+                        self.e.add_fact(st, per)?;
+                        if self.closed(st) {
+                            return Ok(());
+                        }
+                    }
+                }
+                // z = 0 の場合
+                let mut s0: Vec<Poly> = vec![Poly::var(0), Poly::var(1)];
+                let lc = self.e.clause(lem).clone();
+                if lc.nvars() == 2 {
+                    s0[1] = Poly::zero();
+                    let l0 = self.e.k.instantiate(b, lem, s0, 1)?;
+                    self.e.add_fact(st, l0)?;
+                }
+                if self.closed(st) {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// f の値で決まる量の補題: 1 変数の事実 c·f(u) + R(y) = 0 で、u が y を f(y) を通してだけ含むなら
+    /// （u = g(f(y))）、f(y) = f(z) のとき u(y) = u(z) なので R(y) = R(z)。
+    /// 作り方（すべて検証核の規則）: 排中律 f(y) − f(z) = 0 ∨ ≠ 0、合同性で f(u(y)) = f(u(z)) ∨ ≠、
+    /// 一次結合で「R(y) − R(z) = 0 ∨ f(y) − f(z) ≠ 0」、さらに R(z) の f(z) を f(y) に置き換える。
+    pub(crate) fn value_lemmas(&mut self, st: &mut BState) -> Res<()> {
+        let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
+        let fy = Poly::f(x());
+        let fya = Atom::F(std::rc::Rc::new(x()));
+        let mut done = 0;
+        for u in units {
+            if done >= self.scaled(6) || self.closed(st) {
+                return Ok(());
+            }
+            let p = self.e.poly0(u);
+            // u = g(f(y)) の形の f の原子（y は f(y) を通してだけ現れる）
+            let mut cand: Option<(Atom, Poly)> = None;
+            for a in p.top_atoms() {
+                if let Atom::F(arg) = &a {
+                    if **arg == x() || !arg.vars().contains(&0) {
+                        continue;
+                    }
+                    // arg の中で f(y) を記号 w（Var(5)）に置き換えて、y が残らないこと
+                    let (w_arg, _) = replace_atom(arg, &fya, &Poly::var(5));
+                    if w_arg.vars().contains(&0) || !w_arg.vars().contains(&5) {
+                        continue;
+                    }
+                    if cand.is_none() {
+                        cand = Some((a.clone(), (**arg).clone()));
+                    }
+                }
+            }
+            let (atom, arg) = match cand {
+                Some(c) => c,
+                None => continue,
+            };
+            let key = format!("valuelem|{:?}", u);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let c = match coeff_of_atom(&p, &atom) {
+                Some(c) => c,
+                None => continue,
+            };
+            done += 1;
+            self.bump("value_lemma");
+            let b = st.b;
+            let z = y();
+            // u(z): y → z
+            let uz = self.e.k.instantiate(b, u, vec![z.clone()], 2)?;
+            let fz = Poly::f(z.clone());
+            let diff = fy.sub(&fz);
+            let eo = self.e.k.eq_or_ne(b, 2, diff.clone())?;
+            let (ie, ke) = match find_lit(self.e.clause(eo), &diff) {
+                Some(t) => t,
+                None => continue,
+            };
+            // arg(y) − arg(z) = m·(f(y) − f(z))
+            let arg_z = arg.subst_vars(&[z.clone()]);
+            let m = match crate::polyutil::exact_div(&arg.sub(&arg_z), &diff) {
+                Some(m) => m,
+                None => continue,
+            };
+            let cg = self.e.k.congruence(b, 2, arg_z.clone(), vec![(m.scale(&(Q::one() / &ke)), eo, ie)])?;
+            let target = Poly::from_atom(atom.clone()).sub(&Poly::f(arg_z.clone()));
+            let (ic, kc) = match find_lit(self.e.clause(cg), &target) {
+                Some(t) => t,
+                None => continue,
+            };
+            let pz = p.subst_vars(&[z.clone()]);
+            let lam_z = match scale_ratio(&self.e.poly0(uz), &pz) {
+                Some(k) => k,
+                None => continue,
+            };
+            // p(y) − p(z) − c·(f(arg(y)) − f(arg(z))) = R(y) − R(z)
+            let mut items = vec![
+                (Poly::one(), u, 0),
+                (Poly::constant(-Q::one() / &lam_z), uz, 0),
+                (Poly::constant(-(c.clone()) / &kc), cg, ic),
+            ];
+            // R(z) の f(z) を f(y) に: R(y) − R(z) − (R(y) − R(z)[f(z)→f(y)]) = q·(f(y) − f(z)) の分を排中律のリテラルで足す
+            let rdiff = p.sub(&pz).sub(&target.scale(&c));
+            let fza = Atom::F(std::rc::Rc::new(z.clone()));
+            let (r2, q) = replace_atom(&rdiff, &fza, &fy);
+            // rdiff − r2 = q·(f(z) − f(y)) = −q·diff
+            items.push((q.scale(&(Q::one() / &ke)), eo, ie));
+            let _ = r2;
+            let lem = self.e.k.lincomb(b, 2, items)?;
+            if let Added::New(nf) = self.e.add_fact(st, lem)? {
+                // 「… ∨ f(y) − f(x) ≠ 0」の形なら条件つきの単射性として覚える
+                let want = Lit::ne(Poly::f(y()).sub(&Poly::f(x())));
+                if self.e.clause(nf).nvars() == 2 && self.e.clause(nf).lits().contains(&want) && st.cinj.len() < 8 {
+                    st.cinj.push(nf);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 条件つきの単射性「Q(x, y) ∨ f(y) − f(x) ≠ 0」を、単位等式 f(s₁) − f(s₂) = 0 に当てはめて Q を得る（導出原理）
+    pub(crate) fn apply_cond_injectivity(&mut self, st: &mut BState) -> Res<()> {
+        if st.cinj.is_empty() {
+            return Ok(());
+        }
+        // 当てはめる相手は変数のない事実と小さい 1 変数の事実に限り、1 回の呼び出しで最大 scaled(40) 回
+        let mut units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) <= 1).collect();
+        units.sort_by_key(|f| (self.e.nvars(*f), poly_size(&self.e.poly0(*f))));
+        let mut budget = self.scaled(40);
+        for u in units {
+            if budget == 0 {
+                return Ok(());
+            }
+            let p = self.e.poly0(u);
+            if p.terms().len() != 2 || poly_size(&p) > 30 {
+                continue;
+            }
+            let (m1, c1) = &p.terms()[0];
+            let (m2, c2) = &p.terms()[1];
+            if *c1 != -c2.clone() || m1.factors().len() != 1 || m2.factors().len() != 1 || m1.factors()[0].1 != 1 || m2.factors()[0].1 != 1 {
+                continue;
+            }
+            let (s1, s2) = match (&m1.factors()[0].0, &m2.factors()[0].0) {
+                (Atom::F(s1), Atom::F(s2)) => ((**s1).clone(), (**s2).clone()),
+                _ => continue,
+            };
+            let nv = self.e.nvars(u);
+            budget -= 1;
+            for ci in st.cinj.clone() {
+                for (a, bb) in [(s2.clone(), s1.clone()), (s1.clone(), s2.clone())] {
+                    let key = format!("cinj|{:?}|{:?}|{}", u, ci, a);
+                    if !st.tried.insert(key) {
+                        continue;
+                    }
+                    let inst = self.e.k.instantiate(st.b, ci, vec![a.clone(), bb.clone()], nv)?;
+                    let want = Lit::ne(Poly::f(bb.clone()).sub(&Poly::f(a.clone())));
+                    let li = match self.e.clause(inst).lits().iter().position(|l| *l == want) {
+                        Some(i) => i,
+                        None => continue,
+                    };
+                    let r = self.e.k.resolve(st.b, inst, li, u, 0)?;
+                    self.bump("cinj_apply");
+                    self.e.add_fact(st, r)?;
+                    if self.closed(st) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
