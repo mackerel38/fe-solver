@@ -83,17 +83,15 @@ def main():
             if os.path.exists(src):
                 shutil.copy(src, dst)
 
-    # 証明文を取れなかった古い結果は使わず、新しい結果に戻す（結果と証明の組を崩さない）
+    # 証明文を取れなかった古い結果: 解決した結果なら（新しい結果があれば）新しい結果に戻す（解決と証明の組を崩さない）。
+    # それ以外（異常終了などで証明文がもともとない結果）は、証明文なしで残す
     for pid in missing:
-        if pid in new:
+        if pid in new and rank(best[pid]) == 3:
             best[pid] = new[pid]
             kept_old.remove(pid)
             src = os.path.join(args.new_dir, "proofs", pid + ".txt")
             if os.path.exists(src):
                 shutil.copy(src, os.path.join(args.out, "proofs", pid + ".txt"))
-        else:
-            del best[pid]
-            kept_old.remove(pid)
 
     with open(os.path.join(args.out, "results.jsonl"), "w", encoding="utf-8") as fp:
         for pid in sorted(best):
