@@ -895,6 +895,15 @@ impl Searcher {
                     two.push(vec![x(), y().sub(&f0)]);
                     two.push(vec![x().add(&y()), y().neg()]);
                 }
+                // 和・差の代入と f(0) だけのずらし（第 4 ラウンド以降）
+                if round >= 4 {
+                    let f0 = Poly::f(Poly::zero());
+                    two.push(vec![x().add(&y()), y()]);
+                    two.push(vec![x().sub(&y()), y()]);
+                    two.push(vec![x(), y().sub(&x())]);
+                    two.push(vec![x().add(&f0), y()]);
+                    two.push(vec![x().sub(&f0), y()]);
+                }
                 for s in two {
                     if self.closed(st) || !st.units.contains(&g) {
                         break;
