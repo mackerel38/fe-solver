@@ -732,6 +732,15 @@ impl Searcher {
                 out.push(Poly::cnst(i as u32));
             }
         }
+        // 全射性の証人 S（f(S(t)) = t）から、f の値が 0・1 になる点 S(0), S(1)（「f(a) = 0 となる a」の代わり）
+        for w in self.witnesses(st) {
+            for t in [Poly::zero(), Poly::one()] {
+                let k = w.subst_vars(&[t]);
+                if out.len() < 6 && !out.contains(&k) && crate::order::poly_size(&k) <= 30 {
+                    out.push(k);
+                }
+            }
+        }
         // 規則の左辺 f(p(x)) に小さな有理数を代入した点 K のうち、f(K) の正規形が定数のもの
         let mut cands: Vec<Poly> = Vec::new();
         for r in &st.rules {
