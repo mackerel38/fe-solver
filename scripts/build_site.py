@@ -2,7 +2,7 @@
 """GitHub Pages 用の静的サイトを作る（問題の一覧と、問題ごとの結果・証明）。
 
 使い方: python3 scripts/build_site.py <集約した結果のディレクトリ> --out site
-入力: <dir>/results.jsonl, <dir>/proofs/FE-XXXX.txt, <dir>/summary.json, data/problems.json
+入力: <dir>/results.jsonl, <dir>/proofs/FE-XXXX.txt, data/problems.json
 証明文はソルバ（fe_render）が検証核の導出記録から生成したものを、そのまま表示する（このスクリプトは書き換えない）。
 """
 import argparse
@@ -14,7 +14,6 @@ import re
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATUS_NAME = {"complete": "完全解決", "partial": "部分結果", "unresolved": "未解決", "crash": "異常終了",
                "killed": "強制終了", "skipped": "未実行"}
-SET_TAG = {"seen": "", "unseen": "", "challenge": "挑戦"}
 
 CSS = """
 * { box-sizing: border-box; }
@@ -33,7 +32,6 @@ h1 { margin:0 0 24px; }
 .filters button { font:inherit; font-size:.95rem; background:#fff; color:#111; border:1px solid #c8c8c8;
   border-radius:8px; padding:6px 14px; cursor:pointer; }
 .filters button.on { background:#222; color:#fff; border-color:#222; }
-.filters .gap { width:12px; }
 .list { display:grid; grid-template-columns:repeat(auto-fit,minmax(450px,1fr)); gap:16px; }
 .card { display:block; color:inherit; text-decoration:none; border-left:6px solid; border-radius:10px; padding:18px 20px;
   transition: background .15s; }
@@ -43,7 +41,6 @@ h1 { margin:0 0 24px; }
 .head { display:flex; justify-content:space-between; align-items:center; gap:12px; }
 .head h2 { margin:0; font-size:1.25rem; }
 .status { font-weight:600; } .ok .status { color:#2e7d32; } .ng .status { color:#c62828; }
-.tag { color:#666; font-weight:400; font-size:.85rem; margin-right:8px; }
 .eq { font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", Georgia, serif; font-size:1.15rem;
   margin:12px 0 4px; overflow-x:auto; white-space:nowrap; }
 .sol { color:#444; font-size:.92rem; }
@@ -60,20 +57,10 @@ pre { background:#fff; border:1px solid #e2e2e2; border-radius:10px; padding:16p
 
 FILTER_JS = """
 <script>
-const state = { st: 'all', set: 'all' };
-function apply() {
-  for (const c of document.querySelectorAll('.card')) {
-    const okSt = state.st === 'all' || c.dataset.st === state.st;
-    const okSet = state.set === 'all' || c.dataset.set === state.set;
-    c.hidden = !(okSt && okSet);
-  }
-}
 for (const b of document.querySelectorAll('.filters button')) {
   b.addEventListener('click', () => {
-    const k = b.dataset.k;
-    state[k] = b.dataset.v;
-    for (const o of document.querySelectorAll('.filters button[data-k="' + k + '"]')) o.classList.toggle('on', o === b);
-    apply();
+    for (const o of document.querySelectorAll('.filters button')) o.classList.toggle('on', o === b);
+    for (const c of document.querySelectorAll('.card')) c.hidden = !(b.dataset.v === 'all' || c.dataset.st === b.dataset.v);
   });
 }
 </script>
@@ -111,7 +98,6 @@ def main():
     for line in open(os.path.join(rd, "results.jsonl"), encoding="utf-8"):
         r = json.loads(line)
         results[r["id"]] = r
-    summary = json.load(open(os.path.join(rd, "summary.json"), encoding="utf-8"))
     problems = {p["id"]: p for p in json.load(open(os.path.join(ROOT, "data", "problems.json"), encoding="utf-8"))}
     ids = sorted(problems, key=num)
     os.makedirs(os.path.join(args.out, "p"), exist_ok=True)
@@ -124,10 +110,8 @@ def main():
     def head(pid, r, tag_level="h2"):
         ok = r and r["status"] == "complete"
         st = STATUS_NAME.get(r["status"], r["status"]) if r else "未計測"
-        tag = SET_TAG.get(r["set"], "") if r else ""
-        tag_html = f'<span class="tag">{tag}</span>' if tag else ""
         return (f'<div class="head"><{tag_level}>#{num(pid)}</{tag_level}>'
-                f'<span>{tag_html}<span class="status">{st}</span></span></div>'), ("ok" if ok else "ng")
+                f'<span class="status">{st}</span></div>'), ("ok" if ok else "ng")
 
     # 問題ごとのページ
     for k, pid in enumerate(ids):
@@ -154,23 +138,16 @@ def main():
             fp.write(page(f"#{num(pid)} | FE Solver", body, depth=1))
 
     # 一覧
-    sets = summary["sets"]
     done = sum(1 for r in results.values() if r["status"] == "complete")
+    total = len(results)
 
     def stat(value, label, cls=""):
         return f'<div class="stat {cls}"><strong>{value}</strong><span>{label}</span></div>'
 
-    ev, ch = sets.get("evaluation(=seen+unseen)", {}), sets.get("challenge", {})
-    stats = (stat(len(results), "全問題") + stat(done, "完全解決", "ok") +
-             stat(f'{ev.get("complete", 0)}/{ev.get("total", 0)}', "評価セット", "ok") +
-             stat(f'{ch.get("complete", 0)}/{ch.get("total", 0)}', "挑戦セット", "ng"))
-
-    def btn(k, v, label, on=False):
-        return f'<button data-k="{k}" data-v="{v}"{" class=on" if on else ""}>{label}</button>'
-
-    filters = ('<div class="filters">' + btn("st", "all", "すべて", True) + btn("st", "ok", "完全解決") +
-               btn("st", "ng", "未完了") + '<span class="gap"></span>' + btn("set", "all", "すべて", True) +
-               btn("set", "eval", "評価セット") + btn("set", "challenge", "挑戦セット") + "</div>")
+    stats = (stat(total, "全問題") + stat(done, "完全解決", "ok") + stat(total - done, "未完了", "ng") +
+             stat(f"{100 * done / total:.1f}%" if total else "—", "解決率", "ok"))
+    filters = ('<div class="filters"><button data-v="all" class="on">すべて</button>'
+               '<button data-v="ok">完全解決</button><button data-v="ng">未完了</button></div>')
     cards = ""
     for pid in ids:
         r = results.get(pid)
@@ -179,7 +156,7 @@ def main():
         h, cls = head(pid, r)
         s = sols(r)
         sol_html = f'<div class="sol">{esc(s)}</div>' if s and r["status"] == "complete" else ""
-        cards += (f'<a class="card {cls}" href="p/{pid}.html" data-st="{cls}" data-set="{"challenge" if r["set"] == "challenge" else "eval"}">{h}'
+        cards += (f'<a class="card {cls}" href="p/{pid}.html" data-st="{cls}">{h}'
                   f'<div class="eq">{math(problems[pid]["equations"][0]["display"])}</div>{sol_html}</a>')
     body = f'<h1>FE Solver</h1><div class="stats">{stats}</div>{filters}<div class="list">{cards}</div>{FILTER_JS}'
     with open(os.path.join(args.out, "index.html"), "w", encoding="utf-8") as fp:
