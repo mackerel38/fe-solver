@@ -17,6 +17,19 @@ on:
         description: "解くセット（seen,unseen,challenge のカンマ区切り）"
         required: true
         default: "seen,unseen,challenge"
+      ids:
+        description: "解く問題を限る（FE-XXXX のカンマ区切り。空ならセット全体）"
+        required: false
+        default: ""
+      max_width:
+        description: "探索幅の上限（空なら既定の 16）"
+        required: false
+        default: ""
+      publish:
+        description: "結果をサイトに公開する（main からの実行だけ公開できる。実験では false）"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -69,9 +82,12 @@ jobs:
           path: target/release
       - run: chmod +x target/release/fe_solver
       - name: Benchmark (shard ${{ matrix.shard }}/20)
+        env:
+          FE_MAX_WIDTH: ${{ inputs.max_width }}
         run: >
           python3 scripts/bench.py --no-build --no-tests --save-proofs
           --sets "${{ inputs.sets }}"
+          --ids "${{ inputs.ids }}"
           --timeout "${{ inputs.eval_timeout }}"
           --challenge-timeout "${{ inputs.challenge_timeout }}"
           --shard "${{ matrix.shard }}/20"
@@ -114,7 +130,7 @@ jobs:
   # 結果と証明のサイトを作って GitHub Pages に公開する（publish.yml を呼ぶ）。
   publish:
     needs: merge
-    if: always() && needs.merge.result == 'success'
+    if: always() && needs.merge.result == 'success' && inputs.publish && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       actions: read
