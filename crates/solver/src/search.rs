@@ -724,6 +724,10 @@ impl Searcher {
         // 証明を作らない事前計算で無駄とわかる代入例は省く
         if self.e.clause(f).lits().len() == 1 {
             let ps = self.e.poly0(f).subst_vars(&s);
+            if !st.inst_polys.insert(ps.clone()) {
+                self.bump("inst_dup");
+                return Ok(false);
+            }
             if self.e.predict_useless(st, &ps) {
                 self.bump("inst_skipped");
                 return Ok(false);
