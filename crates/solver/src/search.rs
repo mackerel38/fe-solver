@@ -867,6 +867,22 @@ impl Searcher {
             if !st.units.contains(&g) {
                 continue;
             }
+            // 閉じた値（−f(0), ±f(1), f(0)²）を一方の変数に代入する（解答で多い P(−f(0), x) など）
+            if round >= 2 {
+                let f0 = Poly::f(Poly::zero());
+                let f1 = Poly::f(Poly::one());
+                for cv in [f0.neg(), f1.clone(), f1.neg(), f0.pow(2)] {
+                    for sb in [vec![cv.clone(), x()], vec![x(), cv.clone()]] {
+                        if self.closed(st) {
+                            return Ok(());
+                        }
+                        if !st.units.contains(&g) {
+                            break;
+                        }
+                        self.try_instance(st, g, sb, 1)?;
+                    }
+                }
+            }
             // 2 変数のままの代入（P(f(x), y) など）
             if round >= 1 {
                 let fy = Poly::f(y());
