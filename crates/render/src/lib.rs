@@ -581,6 +581,73 @@ pub fn fmt_add_family(fam: &fe_kernel::AddFamily) -> String {
     s
 }
 
+/// 多項式の族 b のすべての関数が多項式の族 a に含まれるか（表示で重複を省くため。証明には使わない）。
+/// a の各パラメータが x のある 1 つのべきの係数としてだけ 1 次で現れる（c、cx、x + c、c₁x + c₂ など）とき、
+/// b − a(パラメータ = 0) の x の各べきの係数を、そのべきのパラメータに割り当てられれば含まれる。
+pub fn family_subsumes(a: &fe_kernel::Family, b: &fe_kernel::Family) -> bool {
+    if a.template() == b.template() && a.params().len() == b.params().len() {
+        return true;
+    }
+    let na = a.params().len() as u32;
+    if na == 0 {
+        return false;
+    }
+    let xdeg = |m: &fe_kernel::Mono| m.factors().iter().filter(|(t, _)| *t == Atom::Var(0)).map(|(_, e)| *e).sum::<u32>();
+    // a のパラメータ j → (x の指数, 係数)
+    let mut pos: Vec<Option<(u32, Q)>> = vec![None; na as usize];
+    for (m, c) in a.template().terms() {
+        let ps: Vec<&(Atom, u32)> = m.factors().iter().filter(|(t, _)| matches!(t, Atom::Var(i) if *i >= 2)).collect();
+        if ps.is_empty() {
+            continue;
+        }
+        if ps.len() != 1 || ps[0].1 != 1 || m.factors().iter().any(|(t, _)| !matches!(t, Atom::Var(_))) {
+            return false;
+        }
+        let j = match ps[0].0 {
+            Atom::Var(i) => (i - 2) as usize,
+            _ => return false,
+        };
+        if pos[j].is_some() {
+            return false;
+        }
+        pos[j] = Some((xdeg(m), c.clone()));
+    }
+    // b のパラメータは別の番号にずらす
+    let mut sb = vec![Poly::var(0), Poly::var(1)];
+    for k in 0..b.params().len() as u32 {
+        sb.push(Poly::var(100 + k));
+    }
+    let b2 = b.template().subst_vars(&sb);
+    let mut z = vec![Poly::var(0), Poly::var(1)];
+    for _ in 0..na {
+        z.push(Poly::zero());
+    }
+    let d = b2.sub(&a.template().subst_vars(&z));
+    let mut exps: Vec<u32> = d.terms().iter().map(|(m, _)| xdeg(m)).collect();
+    exps.sort();
+    exps.dedup();
+    let mut used = vec![false; na as usize];
+    for e in exps {
+        match (0..na as usize).find(|&j| !used[j] && matches!(&pos[j], Some((pe, _)) if *pe == e)) {
+            Some(j) => used[j] = true,
+            None => return false,
+        }
+    }
+    true
+}
+
+/// 表示用: 他の族に含まれる多項式の族を省いた一覧（同じ族どうしは先のものを残す）
+pub fn display_families(fams: &[fe_kernel::Family]) -> Vec<&fe_kernel::Family> {
+    let mut out = Vec::new();
+    for (i, f) in fams.iter().enumerate() {
+        let dominated = fams.iter().enumerate().any(|(j, g)| j != i && family_subsumes(g, f) && !(family_subsumes(f, g) && j > i));
+        if !dominated {
+            out.push(f);
+        }
+    }
+    out
+}
+
 /// 多項式の族 g'(x; p̄) のすべての関数が加法的な族 {A + t} に含まれるか（表示で重複を省くため）。
 /// t = 0 なら g' が x について斉次 1 次（ax の形）、t が単独のパラメータ c なら g' が x の 1 次以下なら含まれる。
 pub fn subsumed_by_additive(fam: &fe_kernel::Family, add: &fe_kernel::AddFamily) -> bool {
@@ -842,8 +909,11 @@ pub fn render(k: &Kernel, concl: &Conclusion) -> String {
     ctx.label.remove(&k.axiom());
     ctx.emit(k.axiom(), "");
     if concl.complete {
-        let mut fams: Vec<String> =
-            concl.families.iter().filter(|f| !concl.add_families.iter().any(|a| subsumed_by_additive(f, a))).map(fmt_family).collect();
+        let mut fams: Vec<String> = display_families(&concl.families)
+            .into_iter()
+            .filter(|f| !concl.add_families.iter().any(|a| subsumed_by_additive(f, a)))
+            .map(fmt_family)
+            .collect();
         fams.extend(concl.pw_families.iter().map(fmt_pw));
         fams.extend(concl.add_families.iter().map(fmt_add_family));
         if fams.is_empty() {
@@ -867,7 +937,7 @@ pub fn render(k: &Kernel, concl: &Conclusion) -> String {
             );
         }
         let n = Names::plain();
-        for fam in concl.families.iter().filter(|f| !concl.add_families.iter().any(|a| subsumed_by_additive(f, a))) {
+        for fam in display_families(&concl.families).into_iter().filter(|f| !concl.add_families.iter().any(|a| subsumed_by_additive(f, a))) {
             let (l, r) = substituted_sides(k, fam);
             let params = fam.params().len();
             let pn = |i: u32| if params == 1 { "c".to_string() } else { format!("c{}", i + 1) };

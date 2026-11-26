@@ -211,7 +211,7 @@ pub fn report(out: &SolveOutput) -> String {
             }
             if !out.found.is_empty() || !out.pw_found.is_empty() {
                 s.push_str("見つけた解:\n");
-                for f in &out.found {
+                for f in fe_render::display_families(&out.found) {
                     s.push_str(&format!("  {}\n", fe_render::fmt_family(f)));
                 }
                 for f in &out.pw_found {
