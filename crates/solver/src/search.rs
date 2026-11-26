@@ -759,7 +759,9 @@ impl Searcher {
         gens.truncate(self.scaled(if round == 0 { 2 } else { 4 + round }));
         let t1: Vec<Poly> = vec![Poly::zero(), Poly::one(), Poly::int(-1), x(), x().neg()];
         let fx = Poly::f(x());
-        let t2: Vec<Poly> = vec![fx.clone(), fx.neg(), Poly::f(Poly::zero()), x().scale(&fe_kernel::poly::q(2)), Poly::int(2)];
+        let half = Poly::constant(fe_kernel::poly::qf(1, 2));
+        let t2: Vec<Poly> =
+            vec![fx.clone(), fx.neg(), Poly::f(Poly::zero()), x().scale(&fe_kernel::poly::q(2)), Poly::int(2), half.clone(), half.neg()];
         let specials = self.special_points(st)?;
         if std::env::var("FE_DEBUG").is_ok() {
             eprintln!("b{} round {} specials: {:?}", st.b.0, round, specials.iter().map(|p| p.to_string()).collect::<Vec<_>>());
