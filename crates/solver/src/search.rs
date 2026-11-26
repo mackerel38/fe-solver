@@ -1116,6 +1116,61 @@ impl Searcher {
         out
     }
 
+    /// t − t(w := 0) を、「w ≠ 0 ∨ …」の形の事実の一次結合で表す項目（Σ 係数·保存形 = t − t(w := 0)）。
+    /// f(s) で s が w を含むなら、内側から再帰的に「f(s) − f(s₀) = 0 ∨ w ≠ 0」を合同性で作り、
+    /// 残りの多項式の部分は w で割り切れることを使って排中律のリテラル w = 0 に掛ける。扱えなければ None。
+    fn zero_case_items(
+        &mut self,
+        b: BranchId,
+        t: &Poly,
+        w: u32,
+        eo: Fact,
+        ie: usize,
+        ke: &Q,
+        depth: u32,
+    ) -> Res<Option<Vec<(Poly, Fact, usize)>>> {
+        if depth > 4 {
+            return Ok(None);
+        }
+        let mut z = vec![x(), y()];
+        z[w as usize] = Poly::zero();
+        let mut items: Vec<(Poly, Fact, usize)> = Vec::new();
+        let mut cur = t.clone();
+        for a in t.top_atoms() {
+            match &a {
+                Atom::F(s0) if s0.vars().contains(&w) => {
+                    let sz = s0.subst_vars(&z);
+                    let inner = match self.zero_case_items(b, s0, w, eo, ie, ke, depth + 1)? {
+                        Some(v) => v,
+                        None => return Ok(None),
+                    };
+                    if inner.is_empty() {
+                        continue;
+                    }
+                    let cg = self.e.k.congruence(b, 2, sz.clone(), inner)?;
+                    let target = Poly::from_atom(a.clone()).sub(&Poly::f(sz.clone()));
+                    let (ic, kc) = match find_lit(self.e.clause(cg), &target) {
+                        Some(t) => t,
+                        None => return Ok(None),
+                    };
+                    let (cur2, q) = replace_atom(&cur, &a, &Poly::f(sz));
+                    items.push((q.scale(&(Q::one() / &kc)), cg, ic));
+                    cur = cur2;
+                }
+                Atom::Inv(s0) if s0.vars().contains(&w) => return Ok(None),
+                _ => {}
+            }
+        }
+        let rest = cur.sub(&t.subst_vars(&z));
+        if !rest.is_zero() {
+            match crate::polyutil::exact_div(&rest, &Poly::var(w)) {
+                Some(r) => items.push((r.scale(&(Q::one() / ke)), eo, ie)),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(items))
+    }
+
     /// 分数の代入: 2 変数の単位等式 g に v := sv（inv(w) を含む）を代入し、w·inv(w) を 1 に約した式 E' について
     ///  (A) 逆数の公理「w = 0 ∨ w·inv(w) = 1」と合同性・一次結合で「w = 0 ∨ E' = 0」
     ///  (B) 排中律「w = 0 ∨ w ≠ 0」の w = 0 を代入した形と、E'(w = 0) の書き換えで「w ≠ 0 ∨ E' = 0」
@@ -1136,17 +1191,9 @@ impl Searcher {
         if p1.has_inv() || p1 == p || p1.is_zero() || poly_size(&p1) > self.e.size_cap {
             return Ok(false);
         }
-        // (B) で必要な形を先に確かめる: w = 0 での値が書き換えで 0 になり、w を含む f の引数の差が w で割り切れること
         let mut z = vec![x(), y()];
         z[w as usize] = Poly::zero();
         let p0 = p1.subst_vars(&z);
-        for a in p1.top_atoms() {
-            if let Atom::F(t) = &a {
-                if t.vars().contains(&w) && crate::polyutil::exact_div(&(**t).sub(&t.subst_vars(&z)), &wv).is_none() {
-                    return Ok(false);
-                }
-            }
-        }
         self.bump("invsub_try");
         let inst = self.e.k.instantiate(b, g, sb, 2)?;
         let pi = self.e.poly0(inst);
@@ -1197,36 +1244,10 @@ impl Searcher {
             Some(t) => t,
             None => return Ok(false),
         };
-        let mut items2: Vec<(Poly, Fact, usize)> = Vec::new();
-        let mut cur = p1.clone();
-        for a in p1.top_atoms() {
-            if let Atom::F(t) = &a {
-                let t0 = t.subst_vars(&z);
-                if t0 == **t {
-                    continue;
-                }
-                let m = match crate::polyutil::exact_div(&(**t).sub(&t0), &wv) {
-                    Some(m) => m,
-                    None => return Ok(false),
-                };
-                let cg = self.e.k.congruence(b, 2, t0.clone(), vec![(m.scale(&(Q::one() / &ke)), eo, ie)])?;
-                let target = Poly::from_atom(a.clone()).sub(&Poly::f(t0.clone()));
-                let (ic, kc) = match find_lit(self.e.clause(cg), &target) {
-                    Some(t) => t,
-                    None => return Ok(false),
-                };
-                let (cur2, q) = replace_atom(&cur, &a, &Poly::f(t0));
-                items2.push((q.scale(&(Q::one() / &kc)), cg, ic));
-                cur = cur2;
-            }
-        }
-        let rest = cur.sub(&p0);
-        if !rest.is_zero() {
-            match crate::polyutil::exact_div(&rest, &wv) {
-                Some(r) => items2.push((r.scale(&(Q::one() / &ke)), eo, ie)),
-                None => return Ok(false),
-            }
-        }
+        let mut items2 = match self.zero_case_items(b, &p1, w, eo, ie, &ke, 0)? {
+            Some(v) => v,
+            None => return Ok(false),
+        };
         let (d2, its0) = self.e.rw_poly(st, &p0, 2)?;
         if !d2.is_zero() {
             // w = 0 の場合を示せないときは条件つきの事実「w = 0 ∨ E' = 0」だけを加える
