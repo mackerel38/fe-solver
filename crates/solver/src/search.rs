@@ -298,16 +298,16 @@ impl Searcher {
             if round == 1 && depth < self.max_depth && self.zero_split(st, depth)? {
                 return Ok(());
             }
-            if round == 2 && depth <= 2 && self.identity_split(st, depth)? {
+            if round == 2 && depth <= 4 && self.identity_split(st, depth)? {
                 return Ok(());
             }
-            if round == 2 && depth <= 2 && std::env::var("FE_NO_INJ").is_err() && self.try_injectivity(st, depth)? {
+            if round == 2 && depth <= 4 && std::env::var("FE_NO_INJ").is_err() && self.try_injectivity(st, depth)? {
                 return Ok(());
             }
             if depth < self.max_depth && self.solution_rule(st).is_none() && self.pointwise_split(st, depth)? {
                 return Ok(());
             }
-            if depth < 3 && self.solution_rule(st).is_none() && self.coef_split(st, depth)? {
+            if depth < 5 && self.solution_rule(st).is_none() && self.coef_split(st, depth)? {
                 return Ok(());
             }
             self.pointwise_instances(st)?;
@@ -320,7 +320,7 @@ impl Searcher {
                     return Ok(());
                 }
             }
-            if round == 2 && depth <= 3 && st.inj.is_none() && self.try_zero_injectivity(st, depth)? {
+            if round == 2 && depth <= 5 && st.inj.is_none() && self.try_zero_injectivity(st, depth)? {
                 return Ok(());
             }
             if round >= 4 && depth <= 3 && self.reduce_depth == 0 && self.solution_rule(st).is_none() && self.try_reduction(st, depth)? {
