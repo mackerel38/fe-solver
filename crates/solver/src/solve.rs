@@ -212,6 +212,10 @@ pub fn report(out: &SolveOutput) -> String {
             if !out.found.is_empty() || !out.pw_found.is_empty() {
                 s.push_str("見つけた解:\n");
                 for f in fe_render::display_families(&out.found) {
+                    // 加法的関数の族（上の【病的な解の存在】）に含まれるものは省く
+                    if out.add_found.iter().any(|a| fe_render::subsumed_by_additive(f, a)) {
+                        continue;
+                    }
                     s.push_str(&format!("  {}\n", fe_render::fmt_family(f)));
                 }
                 for f in &out.pw_found {

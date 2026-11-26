@@ -122,6 +122,52 @@ def normalize_text(t):
     return "\n".join(out)
 
 
+def prune_by_additive(lst):
+    """表示用: 加法的関数を含む族（「A(x)」）を先頭にし、それに含まれる多項式の族（0, x, −x, cx, x + c など）を省く。
+    ソルバの以前の版の結果にも同じ表示をするため、文字列で判定する（数学の内容は変えない）。"""
+    adds = [t for t in lst if "A(" in t]
+    if not adds:
+        return lst
+    kinds = []
+    for a in adds:
+        if "A(A(x)) = x" in a:
+            kinds.append("inv")
+        elif "A(A(x)) = A(x)" in a:
+            kinds.append("proj")
+        elif re.match(r"f\(x\) = A\(x\) [+-]", a):
+            kinds.append("free_c")
+        else:
+            kinds.append("free")
+
+    def lin(t):
+        m = re.fullmatch(r"f\(x\) = (.+?)(（.+ は任意の実数）)?", t)
+        if not m:
+            return None
+        e = m.group(1).replace(" ", "")
+        if e == "0":
+            return ("0", "0")
+        mm = re.fullmatch(r"(-?)(\(\d+/\d+\)|\d+|c\d*)?x([+-](?:\(\d+/\d+\)|\d+|c\d*))?", e)
+        if not mm:
+            return None
+        return ((mm.group(1) or "") + (mm.group(2) or "1"), mm.group(3) or "0")
+
+    def subsumed(t):
+        l = lin(t)
+        if l is None:
+            return False
+        coef, const = l
+        for k in kinds:
+            if k == "free_c" or (k == "free" and const == "0"):
+                return True
+            if k == "inv" and const == "0" and coef in ("1", "-1"):
+                return True
+            if k == "proj" and const == "0" and coef in ("0", "1"):
+                return True
+        return False
+
+    return adds + [t for t in lst if "A(" not in t and not subsumed(t)]
+
+
 def esc(s):
     return html.escape(str(s))
 
@@ -178,7 +224,7 @@ def main():
     def sols(r):
         if not r:
             return ""
-        return "、".join((r.get("families") if r["status"] in ("complete", "special") else r.get("found")) or [])
+        return "、".join(prune_by_additive((r.get("families") if r["status"] in ("complete", "special") else r.get("found")) or []))
 
     def head(pid, r, tag_level="h2"):
         cls = kind(r)

@@ -119,16 +119,23 @@ fn real_main() -> i32 {
                 }
             }
             if as_json {
-                let mut fams: Vec<String> = fe_render::display_families(&out.families)
-                    .into_iter()
-                    .filter(|f| !out.add_families.iter().any(|a| fe_render::subsumed_by_additive(f, a)))
-                    .map(|f| json_str(&fe_render::fmt_family(f)))
-                    .collect();
+                // 加法的関数を含む族を先に、それに含まれる多項式の族は省いて並べる
+                let mut fams: Vec<String> = out.add_families.iter().map(|f| json_str(&fe_render::fmt_add_family(f))).collect();
+                fams.extend(
+                    fe_render::display_families(&out.families)
+                        .into_iter()
+                        .filter(|f| !out.add_families.iter().any(|a| fe_render::subsumed_by_additive(f, a)))
+                        .map(|f| json_str(&fe_render::fmt_family(f))),
+                );
                 fams.extend(out.pw_families.iter().map(|f| json_str(&fe_render::fmt_pw(f))));
-                fams.extend(out.add_families.iter().map(|f| json_str(&fe_render::fmt_add_family(f))));
-                let mut found: Vec<String> = fe_render::display_families(&out.found).into_iter().map(|f| json_str(&fe_render::fmt_family(f))).collect();
+                let mut found: Vec<String> = out.add_found.iter().map(|f| json_str(&fe_render::fmt_add_family(f))).collect();
+                found.extend(
+                    fe_render::display_families(&out.found)
+                        .into_iter()
+                        .filter(|f| !out.add_found.iter().any(|a| fe_render::subsumed_by_additive(f, a)))
+                        .map(|f| json_str(&fe_render::fmt_family(f))),
+                );
                 found.extend(out.pw_found.iter().map(|f| json_str(&fe_render::fmt_pw(f))));
-                found.extend(out.add_found.iter().map(|f| json_str(&fe_render::fmt_add_family(f))));
                 let reasons: Vec<String> = out.reasons.iter().map(|r| json_str(r)).collect();
                 let stats: Vec<String> = out.stats.iter().map(|(k, v)| format!("{}:{}", json_str(k), v)).collect();
                 println!(
