@@ -93,6 +93,26 @@ fn linear_in(u: &Poly, v: u32) -> Option<(Q, Poly)> {
     coef.map(|c| (c, rest))
 }
 
+/// d が変数 v について「v·(a·v + b)」の形（a は 0 でない有理数、v は原子の中に現れない）なら、
+/// v で割った残り a·v + b = 0 の根 −b/a を返す（v = 0 は自明な解なので除く）
+fn root_after_factor(d: &Poly, v: u32) -> Option<Poly> {
+    let av = Atom::Var(v);
+    for (m, _) in d.terms() {
+        if m.factors().iter().any(|(b, _)| *b != av && Poly::from_atom(b.clone()).vars().contains(&v)) {
+            return None;
+        }
+    }
+    let cs = coeffs_in(d, &av);
+    if cs.keys().copied().collect::<Vec<_>>() != vec![1, 2] {
+        return None;
+    }
+    let a = cs[&2].as_const()?;
+    if a.is_zero() {
+        return None;
+    }
+    Some(cs[&1].neg().scale(&(Q::one() / a)))
+}
+
 /// 多項式に現れる f の原子（入れ子も含む）で変数を含むもの
 fn f_atoms_with_vars(p: &Poly) -> Vec<Poly> {
     let mut out: Vec<Poly> = Vec::new();
@@ -983,6 +1003,12 @@ impl Searcher {
         };
         for u in &atoms {
             for v in 0..2u32 {
+                // u = v·(a·v + b) なら v := −b/a で u = 0
+                if let Some(r) = root_after_factor(u, v) {
+                    let mut s = vec![x(), y()];
+                    s[v as usize] = r;
+                    push(s);
+                }
                 if let Some((a, w)) = linear_in(u, v) {
                     let inv = Q::one() / a;
                     // u を変数 v そのものにする: v := (v − w)/a
@@ -1081,6 +1107,19 @@ impl Searcher {
                             let mut s = vec![x(), y()];
                             s[v as usize] = w.neg().scale(&(Q::one() / a));
                             push(s);
+                        } else if let Some(r) = root_after_factor(&d, v) {
+                            // 2 つの引数の差が v·(a·v + b): v := −b/a で引数が一致する
+                            let mut s = vec![x(), y()];
+                            s[v as usize] = r;
+                            push(s);
+                        }
+                        // 係数が閉じた可逆な式なら、その逆数で解く
+                        if let Some((c, w)) = linear_in_closed(&d, v) {
+                            if let Some((_, ic)) = invs.iter().find(|(a, _)| *a == c) {
+                                let mut s = vec![x(), y()];
+                                s[v as usize] = w.neg().mul(ic);
+                                push(s);
+                            }
                         }
                     }
                 }
