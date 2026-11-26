@@ -231,14 +231,7 @@ impl Searcher {
                 if self.closed(st) {
                     return Ok(());
                 }
-                self.apply_cond_injectivity(st)?;
-                if self.closed(st) {
-                    return Ok(());
-                }
-                self.shift_lemmas(st)?;
-                if self.closed(st) {
-                    return Ok(());
-                }
+
             }
             self.same_rhs(st)?;
             if self.closed(st) {
