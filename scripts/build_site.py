@@ -12,7 +12,7 @@ import os
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATUS_NAME = {"complete": "完全解決", "partial": "部分結果", "unresolved": "未解決", "crash": "異常終了",
+STATUS_NAME = {"complete": "解決", "partial": "部分結果", "unresolved": "未解決", "crash": "異常終了",
                "killed": "強制終了", "skipped": "未実行"}
 
 CSS = """
@@ -152,11 +152,11 @@ def main():
     def stat(value, label, cls=""):
         return f'<div class="stat {cls}"><strong>{value}</strong><span>{label}</span></div>'
 
-    stats = (stat(total, "全問題") + stat(done, "完全解決", "ok") + stat(total - done, "未完了", "ng") +
+    stats = (stat(total, "全問題") + stat(done, "解決", "ok") + stat(total - done, "未完了", "ng") +
              stat(f"{100 * done / total:.1f}%" if total else "—", "解決率", "ok"))
     filters = ('<div class="filters">'
                '<button data-k="st" data-v="all" class="on">すべて</button>'
-               '<button data-k="st" data-v="ng">未完了</button><button data-k="st" data-v="ok">完全解決</button>'
+               '<button data-k="st" data-v="ng">未完了</button><button data-k="st" data-v="ok">解決</button>'
                '<span class="gap"></span>'
                '<button data-k="site" data-v="all" class="on">All</button>'
                '<button data-k="site" data-v="open">Open</button><button data-k="site" data-v="solved">Solved</button>'
