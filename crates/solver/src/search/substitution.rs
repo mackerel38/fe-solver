@@ -235,6 +235,30 @@ impl Searcher {
                 }
             }
         }
+        // 全射性の証人を、x が f(x) を通してだけ現れる 1 変数の事実に代入する（f(x) を変数に置き換える）
+        if round >= 1 {
+            let ws = self.witnesses(st);
+            if !ws.is_empty() {
+                let fxa = Atom::F(std::rc::Rc::new(x()));
+                let ones: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
+                for f in ones {
+                    let p = self.e.poly0(f);
+                    let (pw, _) = replace_atom(&p, &fxa, &Poly::var(5));
+                    if pw.vars().contains(&0) || !pw.vars().contains(&5) {
+                        continue;
+                    }
+                    for w in &ws {
+                        if self.closed(st) {
+                            return Ok(());
+                        }
+                        if !st.units.contains(&f) {
+                            break;
+                        }
+                        self.try_instance(st, f, vec![w.clone()], 1)?;
+                    }
+                }
+            }
+        }
         // 1 変数の事実の自己代入
         if round >= 1 {
             let mut ones: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
@@ -298,15 +322,23 @@ impl Searcher {
                 if cs.keys().max() != Some(&1) || r.has_f() && f_atoms_with_vars(&r).len() > 0 {
                     continue;
                 }
-                let a = match cs.get(&1).and_then(|c| c.as_const()) {
-                    Some(a) if !a.is_zero() => a,
-                    _ => continue,
+                // 係数は 0 でない有理数か、逆数のわかっている閉じた式（f(a) ≠ 0 の f(a) など）
+                let inv_a: Poly = match cs.get(&1) {
+                    Some(c) => match c.as_const() {
+                        Some(a) if !a.is_zero() => Poly::constant(Q::one() / a),
+                        Some(_) => continue,
+                        None => match st.invs.iter().find(|(u, _)| u == c) {
+                            Some((_, iu)) => iu.clone(),
+                            None => continue,
+                        },
+                    },
+                    None => continue,
                 };
                 let bb = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
                 if bb.has_var() {
                     continue;
                 }
-                let arg = x().sub(&bb).scale(&(Q::one() / a));
+                let arg = x().sub(&bb).mul(&inv_a);
                 let w = u.subst_vars(&[arg]);
                 if poly_size(&w) <= 24 && !out.contains(&w) {
                     out.push(w);
@@ -541,6 +573,34 @@ impl Searcher {
                 out.push(s)
             }
         };
+        // f の外の部分を 0 にする代入: v を引数に含む f の原子を除いた項を v の多項式 c₁·v + c₀ とみて、
+        // c₀ が c₁ で割り切れるなら v := −c₀/c₁（例: f(x)² + y·f(x) = f(x)(y + f(x)) で y := −f(x)）
+        for v in 0..2u32 {
+            let av = Atom::Var(v);
+            let mut rest = Poly::zero();
+            for (m, c) in p.terms() {
+                if m.factors().iter().any(|(b, _)| *b != av && Poly::from_atom(b.clone()).vars().contains(&v)) {
+                    continue;
+                }
+                rest = rest.add(&Poly::mono(m.clone(), c.clone()));
+            }
+            let cs = coeffs_in(&rest, &av);
+            if cs.keys().max() != Some(&1) {
+                continue;
+            }
+            let c1 = cs[&1].clone();
+            let c0 = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
+            if c0.is_zero() || c1.as_const().is_some() {
+                continue; // 係数が定数の場合は既存の打ち消しの代入で扱う
+            }
+            if let Some(r) = crate::polyutil::exact_div(&c0, &c1) {
+                if !r.vars().contains(&v) {
+                    let mut s = vec![x(), y()];
+                    s[v as usize] = r.neg();
+                    push(s);
+                }
+            }
+        }
         for u in &atoms {
             for v in 0..2u32 {
                 // u = v·(a·v + b) なら v := −b/a で u = 0

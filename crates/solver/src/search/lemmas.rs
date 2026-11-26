@@ -169,6 +169,20 @@ impl Searcher {
             Some(h) => h,
             None => return Ok(()),
         };
+        // 単射性から零点の補題: y := 0 を代入し、f(0) が 0 に書き換わって「f(x) ≠ 0 ∨ x = 0」になれば登録する
+        if st.zinj.is_none() && st.tried.insert("inj_to_zinj".into()) {
+            let inst = self.e.k.instantiate(st.b, inj, vec![x(), Poly::zero()], 1)?;
+            if let Added::New(nf) = self.e.add_fact(st, inst)? {
+                let want = fe_kernel::Clause::new(1, vec![Lit::ne(Poly::f(x())), Lit::eq(x())]).map_err(|e| e.to_string())?;
+                if *self.e.clause(nf) == want {
+                    st.zinj = Some(nf);
+                    self.bump("zinj_from_inj");
+                }
+            }
+            if self.closed(st) {
+                return Ok(());
+            }
+        }
         let units = st.units.clone();
         for u in units {
             let p = self.e.poly0(u);

@@ -75,3 +75,16 @@ fn tactic_swap_difference_and_value_injectivity() {
         check_families(eq, &l, &r, &out);
     }
 }
+
+/// 全射性の連鎖: f(a) ≠ 0 の点で y について 1 次になる事実から全射性の証人（係数が閉じた式でもよい）、
+/// f の外の部分を 0 にする代入（y := −f(x)）、単射性から零点の補題（f(0) = 0 のもとで f(t) = 0 ⇒ t = 0）
+#[test]
+fn tactic_surjectivity_chain() {
+    let eq = "f(2*x*f(x) + x*f(y)) = 2*f(x)^2 + y*f(x)";
+    let (l, r, out) = run(eq, 60);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    got.sort();
+    assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+}
