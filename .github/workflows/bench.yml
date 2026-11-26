@@ -34,9 +34,8 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: benchmark
-  cancel-in-progress: false
+# 同時実行の制限（concurrency）は付けない: GitHub は同じグループで待機中の実行を後の実行で取り消すため。
+# 複数の計測を続けて起動すると、ジョブ単位で順番待ちになる。
 
 jobs:
   build:
