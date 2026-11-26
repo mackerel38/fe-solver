@@ -7,6 +7,7 @@ mod finalize;
 mod lemmas;
 mod properties;
 mod reduction;
+mod shift;
 mod splits;
 mod substitution;
 pub(crate) mod util;
@@ -220,6 +221,20 @@ impl Searcher {
             }
             if self.try_mark_additive(st)? {
                 return Ok(());
+            }
+            if round >= 1 {
+                self.value_lemmas(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+                self.apply_cond_injectivity(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+                self.shift_lemmas(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
             }
             self.same_rhs(st)?;
             if self.closed(st) {

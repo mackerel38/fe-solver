@@ -59,6 +59,8 @@ pub struct BState {
     pub cache: HashMap<Atom, Option<(Poly, Fact)>>,
     /// 枝で既に試した代入の記録
     pub tried: HashSet<String>,
+    /// 条件つきの単射性「∀x,y. Q(x, y) ∨ f(y) − f(x) ≠ 0」の節
+    pub cinj: Vec<Fact>,
 }
 
 impl BState {
@@ -79,6 +81,7 @@ impl BState {
             keys: HashSet::new(),
             cache: HashMap::new(),
             tried: HashSet::new(),
+            cinj: Vec::new(),
         }
     }
     /// 子の枝用の複製（キャッシュは引き継がない）
