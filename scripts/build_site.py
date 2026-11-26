@@ -74,6 +74,54 @@ for (const b of document.querySelectorAll('.filters button')) {
 """
 
 
+# ソルバの以前の版が出していた定型の言い回しを、今の版の言い回しに置き換える（意味は変えない。数学の内容には触れない）。
+# 公開中の結果を残す仕組み（merge_best.py）で古い証明文が残っても、表示がそろうようにするため。
+OLD_PHRASES = [
+    ("見つけた解（検証核で代入を確認済み）:", "見つけた解:"),
+    ("証明済みの事実（根の枝。導出つき）:", "証明済みの事実:"),
+    ("状態: 特殊解決（病的な解の存在）", "状態: 特殊解決"),
+    ("どの場合も両辺が一致する（検証核で確認）。", "どの場合も両辺が一致する。"),
+    ("片側に有界なので（コーシーの方程式）", "片側に有界なので"),
+    ("補題として解くと（下の【補題】）解は次に限るので", "下の【補題】より、解は次に限るので"),
+    ("（この場合は未解決）", "この場合は未解決。"),
+    ("加法的関数には ax の形でないもの（ハメル基底を使って作れる）も存在するので、これらは病的な解である。",
+     "ハメル基底を使うと ax の形でない A も作れるので、これらには病的な解が含まれる。"),
+]
+OLD_PHRASE_RE = [
+    # 「このような A には ax の形でないもの（…）も存在するので、これらは病的な解である。」
+    (re.compile(r"このような A には ax の形でないもの（(.+?)）も存在するので、これらは病的な解である。"),
+     lambda m: (m.group(1)[:-3] + "とすると" if m.group(1).endswith("とする") else m.group(1) + "と") + " ax の形でない A も作れるので、これらには病的な解が含まれる。"),
+]
+
+
+def normalize_text(t):
+    for a, b in OLD_PHRASES:
+        t = t.replace(a, b)
+    for rx, f in OLD_PHRASE_RE:
+        t = rx.sub(f, t)
+    # 止まった理由の内部の枝番号（「  枝4: 時間切れ」）を外し、同じ理由はまとめる
+    lines = t.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        out.append(lines[i])
+        if lines[i].strip() == "止まった理由:":
+            why = []
+            i += 1
+            while i < len(lines) and lines[i].startswith("  "):
+                r = re.sub(r"^  枝\d+: ", "", lines[i]).strip()
+                hit = [w for w in why if w[0] == r]
+                if hit:
+                    hit[0][1] += 1
+                else:
+                    why.append([r, 1])
+                i += 1
+            for r, n in why:
+                out.append(f"  {r}（{n} つの場合）" if n > 1 else f"  {r}")
+            continue
+        i += 1
+    return "\n".join(out)
+
+
 def esc(s):
     return html.escape(str(s))
 
@@ -115,7 +163,9 @@ def main():
     pdir = os.path.join(rd, "proofs")
     if os.path.isdir(pdir):
         for name in os.listdir(pdir):
-            shutil.copy(os.path.join(pdir, name), os.path.join(args.out, "data", "proofs", name))
+            text = open(os.path.join(pdir, name), encoding="utf-8").read()
+            with open(os.path.join(args.out, "data", "proofs", name), "w", encoding="utf-8") as fp:
+                fp.write(normalize_text(text))
 
     def kind(r):
         """表示の分類: ok = 解決（完全解決）, sp = 特殊解決（加法的関数を含む族・病的な解の存在）, ng = 未解決"""
@@ -153,7 +203,7 @@ def main():
         proof_path = os.path.join(rd, "proofs", pid + ".txt")
         if os.path.exists(proof_path):
             title = "証明" if r and r["status"] in ("complete", "special") else "途中経過"
-            body += f"<h3>{title}</h3><pre>{esc(open(proof_path, encoding='utf-8').read().strip())}</pre>"
+            body += f"<h3>{title}</h3><pre>{esc(normalize_text(open(proof_path, encoding='utf-8').read()).strip())}</pre>"
         prev_l = f'<a href="{ids[k - 1]}.html">← #{num(ids[k - 1])}</a>' if k > 0 else "<span></span>"
         next_l = f'<a href="{ids[k + 1]}.html">#{num(ids[k + 1])} →</a>' if k + 1 < len(ids) else "<span></span>"
         body += f'<div class="pager">{prev_l}{next_l}</div>'
