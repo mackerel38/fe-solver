@@ -40,6 +40,30 @@ fn real_main() -> i32 {
                 }
             }
         }
+        "scan-choice" => {
+            // 計測用: 各点で 2 つの候補を自由に選べる（病的な解が存在する）方程式を数える。証明には使わない
+            let lib = fe_solver::scan::library();
+            for p in load_problems().expect("data") {
+                let (l, r) = p.equations[0].parsed.sides();
+                let k = fe_kernel::Kernel::new(l.clone(), r.clone()).expect("kernel");
+                let sols: Vec<&(String, fe_kernel::Poly)> = lib.iter().filter(|(_, g)| k.verify_solution(g).is_ok()).collect();
+                let mut pairs = Vec::new();
+                for i in 0..sols.len() {
+                    for j in i + 1..sols.len() {
+                        if fe_solver::scan::pointwise_choice_ok(&l, &r, &sols[i].1, &sols[j].1) {
+                            pairs.push(format!("{{{}, {}}}", sols[i].0, sols[j].0));
+                        }
+                    }
+                }
+                let add = k.verify_additive(&fe_kernel::Poly::zero()).is_ok() || k.verify_additive(&fe_kernel::Poly::f(fe_kernel::Poly::zero())).is_ok();
+                let z = fe_kernel::Poly::zero();
+                let inv = fe_solver::scan::additive_ok(&l, &r, &z, 1);
+                let proj = fe_solver::scan::additive_ok(&l, &r, &z, 2);
+                if !pairs.is_empty() || add || inv || proj {
+                    println!("{}\t{:?}\t{}\tadditive={} inv={} proj={}\t{}", p.id, p.set, p.equations[0].display, add, inv, proj, pairs.join(" "));
+                }
+            }
+        }
         "solve" => {
             let target = args.get(2).expect("問題 ID か方程式");
             let mut timeout = 60.0;
@@ -95,10 +119,17 @@ fn real_main() -> i32 {
                 }
             }
             if as_json {
-                let mut fams: Vec<String> = out.families.iter().map(|f| json_str(&fe_render::fmt_family(f))).collect();
+                let mut fams: Vec<String> = out
+                    .families
+                    .iter()
+                    .filter(|f| !out.add_families.iter().any(|a| fe_render::subsumed_by_additive(f, a)))
+                    .map(|f| json_str(&fe_render::fmt_family(f)))
+                    .collect();
                 fams.extend(out.pw_families.iter().map(|f| json_str(&fe_render::fmt_pw(f))));
+                fams.extend(out.add_families.iter().map(|f| json_str(&fe_render::fmt_add_family(f))));
                 let mut found: Vec<String> = out.found.iter().map(|f| json_str(&fe_render::fmt_family(f))).collect();
                 found.extend(out.pw_found.iter().map(|f| json_str(&fe_render::fmt_pw(f))));
+                found.extend(out.add_found.iter().map(|f| json_str(&fe_render::fmt_add_family(f))));
                 let reasons: Vec<String> = out.reasons.iter().map(|r| json_str(r)).collect();
                 let stats: Vec<String> = out.stats.iter().map(|(k, v)| format!("{}:{}", json_str(k), v)).collect();
                 println!(

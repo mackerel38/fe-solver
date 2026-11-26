@@ -3,7 +3,7 @@
 use crate::engine::{coeff_of_atom, replace_atom, Added, BState, Engine, Res, RwRule, TIMEOUT};
 use crate::order::{atom_cmp, poly_size};
 use crate::polyutil::*;
-use fe_kernel::{Atom, BranchId, Fact, Family, Kernel, Lit, Mono, Poly, Rel, Q};
+use fe_kernel::{AddFamily, AddKind, Atom, BranchId, Fact, Family, Kernel, Lit, Mono, Poly, Rel, Q};
 use num_traits::{One, Zero};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -19,6 +19,8 @@ pub struct Searcher {
     pub open: Vec<(BranchId, String)>,
     pub max_depth: u32,
     pub stats: BTreeMap<String, u64>,
+    /// 検証済みの加法的な族（任意の加法的関数 A について A + f(0) または A が解）。None = 未計算
+    add_fam: Option<Option<AddFamily>>,
 }
 
 fn x() -> Poly {
@@ -111,7 +113,7 @@ pub enum Fin {
 
 impl Searcher {
     pub fn new(e: Engine) -> Searcher {
-        Searcher { e, reduce_depth: 0, width: 1.0, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new() }
+        Searcher { e, reduce_depth: 0, width: 1.0, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new(), add_fam: None }
     }
 
     fn add_time(&mut self, k: &str, t0: Instant) {
@@ -147,7 +149,7 @@ impl Searcher {
         match r {
             Ok(()) => Ok(()),
             Err(m) if m == TIMEOUT => {
-                if !self.e.k.is_closed(st.b) && self.e.k.branch(st.b).solution().is_none() && self.e.k.branch(st.b).children().is_empty() {
+                if !self.e.k.is_closed(st.b) && !self.e.k.branch(st.b).is_settled() && self.e.k.branch(st.b).children().is_empty() {
                     self.open.push((st.b, TIMEOUT.into()));
                     // 部分的な期限で止まった葉は、あとで残り時間があれば再開する
                     if self.retry.len() < 64 {
@@ -173,7 +175,7 @@ impl Searcher {
                     return Ok(());
                 }
                 let b = st.b;
-                if self.e.k.branch(b).is_dead() || self.e.k.is_dead(b) || !self.e.k.branch(b).children().is_empty() || self.e.k.branch(b).solution().is_some() {
+                if self.e.k.branch(b).is_dead() || self.e.k.is_dead(b) || !self.e.k.branch(b).children().is_empty() || self.e.k.branch(b).is_settled() {
                     continue;
                 }
                 let share = final_deadline.saturating_duration_since(now) / ((k - i) as u32);
@@ -282,6 +284,9 @@ impl Searcher {
             }
             self.cauchy_step(st)?;
             if self.closed(st) {
+                return Ok(());
+            }
+            if self.try_mark_additive(st)? {
                 return Ok(());
             }
             self.same_rhs(st)?;
@@ -447,7 +452,7 @@ impl Searcher {
                 continue;
             }
             let concl = sub.e.k.conclude();
-            if !concl.complete || !concl.pw_families.is_empty() {
+            if !concl.complete || !concl.pw_families.is_empty() || !concl.add_families.is_empty() {
                 continue;
             }
             let lemma = std::rc::Rc::new(sub.e.k);
@@ -1458,6 +1463,78 @@ impl Searcher {
             }
         }
         Ok(())
+    }
+
+    /// 任意の加法的関数 A について A + f(0)（f(0) は独立なパラメータ）か A が解かを検証核で確かめる（結果は保存）
+    pub fn additive_family(&mut self) -> Option<AddFamily> {
+        if self.add_fam.is_none() {
+            let k = &self.e.k;
+            let r = k
+                .verify_additive(&Poly::f(Poly::zero()))
+                .or_else(|_| k.verify_additive(&Poly::zero()))
+                .or_else(|_| k.verify_additive_kind(&Poly::zero(), AddKind::Involution))
+                .or_else(|_| k.verify_additive_kind(&Poly::zero(), AddKind::Projection))
+                .ok();
+            self.add_fam = Some(r);
+        }
+        self.add_fam.clone().unwrap()
+    }
+
+    /// この枝で加法性（f(x+y) = f(x) + f(y) − f(0)）が示されていて、加法的な族が解なら、葉を加法的な族で確定する。
+    /// 族が A（定数なし）のときは、f(0) = 0 を書き換え規則で示して f(x+y) = f(x) + f(y) の形にする。
+    fn try_mark_additive(&mut self, st: &mut BState) -> Res<bool> {
+        let a = match st.additive {
+            Some(a) => a,
+            None => return Ok(false),
+        };
+        if !st.tried.insert("mark_additive".into()) {
+            return Ok(false);
+        }
+        let fam = match self.additive_family() {
+            Some(f) => f,
+            None => return Ok(false),
+        };
+        let b = st.b;
+        let fact = if fam.g().is_zero() {
+            let p = self.e.poly0(a);
+            let fxy = Atom::F(std::rc::Rc::new(x().add(&y())));
+            let lam = match coeff_of_atom(&p, &fxy) {
+                Some(l) => l,
+                None => return Ok(false),
+            };
+            let pn = p.scale(&(Q::one() / &lam));
+            let target = Poly::f(x().add(&y())).sub(&Poly::f(x())).sub(&Poly::f(y()));
+            let d = target.sub(&pn);
+            let (d2, items) = self.e.rw_poly(st, &d, 0)?;
+            if !d2.is_zero() {
+                return Ok(false);
+            }
+            let mut its = vec![(Poly::constant(Q::one() / &lam), a, 0)];
+            its.extend(items);
+            self.e.k.lincomb(b, 2, its)?
+        } else {
+            a
+        };
+        let r = if fam.kind() == AddKind::Free {
+            self.e.k.mark_additive(b, fact, fam)
+        } else {
+            // 条件 f(f(x)) = x（または f(x)）を書き換え規則で示す
+            let ffx = Poly::f(Poly::f(x()));
+            let d = if fam.kind() == AddKind::Involution { ffx.sub(&x()) } else { ffx.sub(&Poly::f(x())) };
+            let (d2, items) = self.e.rw_poly(st, &d, 0)?;
+            if !d2.is_zero() || items.is_empty() {
+                return Ok(false);
+            }
+            let c = self.e.k.lincomb(b, 1, items)?;
+            self.e.k.mark_additive_constrained(b, fact, c, fam)
+        };
+        match r {
+            Ok(()) => {
+                self.bump("additive_leaf");
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
     }
 
     /// コーシーの方程式への帰着:

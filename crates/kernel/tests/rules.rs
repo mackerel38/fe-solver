@@ -583,3 +583,124 @@ fn import_lemma_rule() {
     let _ = (c0, h0, c1, h1s);
     assert!(!l3.conclude().complete);
 }
+
+#[test]
+fn verify_additive_rule() {
+    // f(x + y) = f(x) + f(y): 任意の加法的関数が解（g = 0）
+    let k = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    assert!(k.verify_additive(&Poly::zero()).is_ok());
+    // 定数を足したものは解ではない（f(x+y) = f(x) + f(y) で c = 2c は一般には不成立）
+    assert!(k.verify_additive(&f(c(0))).is_err());
+    // f(x + f(y)) = f(x) + f(f(y)): 入れ子の f も展開できる
+    let k = Kernel::new(f(x().add(&f(y()))), f(x()).add(&f(f(y())))).unwrap();
+    assert!(k.verify_additive(&Poly::zero()).is_ok());
+    // f(x + y) + f(0) = f(x) + f(y): A + c（c は任意）が解
+    let k = Kernel::new(f(x().add(&y())).add(&f(c(0))), f(x()).add(&f(y()))).unwrap();
+    assert!(k.verify_additive(&f(c(0))).is_ok());
+    // f(2x + 3y) = 2f(x) + 3f(y): 有理数係数は外に出せる
+    let k = Kernel::new(f(x().scale(&q(2)).add(&y().scale(&q(3)))), f(x()).scale(&q(2)).add(&f(y()).scale(&q(3)))).unwrap();
+    assert!(k.verify_additive(&Poly::zero()).is_ok());
+    // 誤り: f(xy) = f(x)f(y)（加法的関数のすべてが解ではない）
+    let k = Kernel::new(f(x().mul(&y())), f(x()).mul(&f(y()))).unwrap();
+    assert!(k.verify_additive(&Poly::zero()).is_err());
+    // 誤り: f(x·y) = x·f(y)（A(xy) と x·A(y) は別の記号。実数倍は外に出せない）
+    let k = Kernel::new(f(x().mul(&y())), x().mul(&f(y()))).unwrap();
+    assert!(k.verify_additive(&Poly::zero()).is_err());
+    // 誤り: f(x + f(y)) = f(x) + f(y)（A(A(y)) = A(y) は一般には不成立）
+    let k = Kernel::new(f(x().add(&f(y()))), f(x()).add(&f(y()))).unwrap();
+    assert!(k.verify_additive(&Poly::zero()).is_err());
+    // 誤り: f(x^2) = x·f(x)
+    let k = Kernel::new(f(x().pow(2)).add(&f(y()).sub(&f(y()))), x().mul(&f(x()))).unwrap();
+    assert!(k.verify_additive(&Poly::zero()).is_err());
+    // 族の式に f(x) や y は使えない
+    let k = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    assert!(k.verify_additive(&f(x())).is_err());
+    assert!(k.verify_additive(&y()).is_err());
+}
+
+#[test]
+fn mark_additive_rule() {
+    // f(x + y) + f(0) = f(x) + f(y): 公理そのものが「f − f(0) は加法的」
+    let mut k = Kernel::new(f(x().add(&y())).add(&f(c(0))), f(x()).add(&f(y()))).unwrap();
+    let ax = k.axiom();
+    let fam = k.verify_additive(&f(c(0))).unwrap();
+    // 形の違う事実（x と y を入れ替えただけの例化は同じ節。0 を代入した 1 変数の事実は不可）
+    let p0 = k.instantiate(ROOT, ax, vec![x(), c(0)], 1).unwrap();
+    assert!(k.mark_additive(ROOT, p0, fam.clone()).is_err());
+    // g が違う族とは合わない
+    let k2 = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    let fam0 = k2.verify_additive(&Poly::zero()).unwrap();
+    assert!(k.mark_additive(ROOT, ax, fam0).is_err(), "別の検証核の族");
+    // 正しい使い方
+    k.mark_additive(ROOT, ax, fam.clone()).unwrap();
+    let concl = k.conclude();
+    assert!(concl.complete);
+    assert_eq!(concl.add_families.len(), 1);
+    assert!(concl.families.is_empty());
+    // 二重の確定・確定した葉の場合分けは不可
+    assert!(k.mark_additive(ROOT, ax, fam).is_err());
+    assert!(k.split_em(ROOT, cl(1, vec![Lit::eq(f(x()))])).is_err());
+
+    // 場合分けの中の葉: f(x + y) = f(x) + f(y) で、f ≡ 0 の枝と、そうでない枝（加法的）
+    let mut k = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    let ax = k.axiom();
+    let fam = k.verify_additive(&Poly::zero()).unwrap();
+    let (c0, h0, c1, _, _) = k.split_em(ROOT, cl(1, vec![Lit::eq(f(x()))])).unwrap();
+    assert!(k.mark_additive(ROOT, ax, fam.clone()).is_err(), "葉ではない");
+    let zero = k.verify_solution(&Poly::zero()).unwrap();
+    k.mark_solution(c0, h0, zero).unwrap();
+    assert!(!k.conclude().complete);
+    k.mark_additive(c1, ax, fam).unwrap();
+    let concl = k.conclude();
+    assert!(concl.complete);
+    assert_eq!((concl.families.len(), concl.add_families.len()), (1, 1));
+}
+
+#[test]
+fn import_lemma_refuses_additive_leaves() {
+    use std::rc::Rc;
+    // 加法的な族で確定した補題からは「f(x) = g(x)」の選言を作れない
+    let mut l = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    let la = l.axiom();
+    let fam = l.verify_additive(&Poly::zero()).unwrap();
+    l.mark_additive(ROOT, la, fam).unwrap();
+    assert!(l.conclude().complete);
+    let l = Rc::new(l);
+    let mut k = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    let ka = k.axiom();
+    assert!(k.import_lemma(ROOT, ka, l).is_err());
+}
+
+#[test]
+fn additive_kinds_rule() {
+    use fe_kernel::AddKind;
+    // f(x + f(y)) = f(x) + y: A(A(y)) = y を満たす加法的関数（対合）はすべて解。条件なしの A は解ではない
+    let mut k = Kernel::new(f(x().add(&f(y()))), f(x()).add(&y())).unwrap();
+    assert!(k.verify_additive(&Poly::zero()).is_err());
+    assert!(k.verify_additive_kind(&Poly::zero(), AddKind::Projection).is_err());
+    let fam = k.verify_additive_kind(&Poly::zero(), AddKind::Involution).unwrap();
+    assert!(k.verify_additive_kind(&f(c(0)), AddKind::Involution).is_err(), "条件つきは g = 0 に限る");
+    // f(x + f(y)) = f(x) + f(y): 射影（A(A(y)) = A(y)）はすべて解、対合は解ではない
+    let k2 = Kernel::new(f(x().add(&f(y()))), f(x()).add(&f(y()))).unwrap();
+    assert!(k2.verify_additive_kind(&Poly::zero(), AddKind::Projection).is_ok());
+    assert!(k2.verify_additive_kind(&Poly::zero(), AddKind::Involution).is_err());
+    // f(f(x) + f(y)) = x + y: 対合はすべて解
+    let k3 = Kernel::new(f(f(x()).add(&f(y()))), x().add(&y())).unwrap();
+    assert!(k3.verify_additive_kind(&Poly::zero(), AddKind::Involution).is_ok());
+    // f(x·f(y)) = y·f(x) は対合でも成り立たない（実数倍は外に出せない）
+    let k4 = Kernel::new(f(x().mul(&f(y()))), y().mul(&f(x()))).unwrap();
+    assert!(k4.verify_additive_kind(&Poly::zero(), AddKind::Involution).is_err());
+
+    // 確定: 加法性と f(f(x)) = x の両方の事実が要る（ここでは場合分けの仮定として与える）
+    let add = cl(2, vec![Lit::eq(f(x().add(&y())).sub(&f(x())).sub(&f(y())))]);
+    let (b0, ha, _, _, _) = k.split_em(ROOT, add).unwrap();
+    let (b1, hi, _, _, _) = k.split_em(b0, cl(1, vec![Lit::eq(f(f(x())).sub(&x()))])).unwrap();
+    assert!(k.mark_additive(b1, ha, fam.clone()).is_err(), "条件つきの族は条件の事実なしでは確定できない");
+    assert!(k.mark_additive_constrained(b1, ha, ha, fam.clone()).is_err(), "条件の事実の形が違う");
+    let (b2, hp, _, _, _) = k.split_em(b1, cl(1, vec![Lit::eq(f(f(x())).sub(&f(x())))])).unwrap();
+    assert!(k.mark_additive_constrained(b2, ha, hp, fam.clone()).is_err(), "射影の条件では対合の族を確定できない");
+    k.mark_additive_constrained(b2, ha, hi, fam).unwrap();
+    let concl = k.conclude();
+    assert_eq!(concl.add_families.len(), 1);
+    assert!(!concl.complete, "排中律の他の枝が開いている");
+}

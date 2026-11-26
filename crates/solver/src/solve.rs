@@ -2,16 +2,24 @@
 
 use crate::engine::Engine;
 use crate::search::{find_candidates, find_pw_candidates, Searcher};
-use fe_kernel::{Fact, Family, Kernel, Poly, PwFamily, Rel, ROOT};
+use fe_kernel::{AddFamily, Fact, Family, Kernel, Poly, PwFamily, Rel, ROOT};
 use std::time::{Duration, Instant};
 
 pub struct SolveOutput {
     pub kernel: Kernel,
+    /// complete: 解の集合を決定（多項式・区分的な族）
+    /// special: 解の集合を決定（加法的関数を含む族があり、病的な解をもつ）
+    /// special_exist: 任意の加法的関数を含む族が解であることを示した（病的な解が存在する）が、解の集合は未確定
+    /// partial: 解を見つけたが未確定 / unresolved: 解も見つからない
     pub status: &'static str,
     pub families: Vec<Family>,
     pub found: Vec<Family>,
     pub pw_families: Vec<PwFamily>,
     pub pw_found: Vec<PwFamily>,
+    /// 解の集合に含まれる加法的な族（special のとき）
+    pub add_families: Vec<AddFamily>,
+    /// 検証核で確かめた「任意の加法的関数を含む解の族」（根の方程式についての検証。special / special_exist）
+    pub add_found: Option<AddFamily>,
     pub reasons: Vec<String>,
     pub error: Option<String>,
     pub elapsed: Duration,
@@ -54,24 +62,26 @@ pub fn solve_with(lhs: Poly, rhs: Poly, timeout: Duration, schedule: &[(f64, f64
         let mut out = solve_once(lhs.clone(), rhs.clone(), t, *w)?;
         out.elapsed = start.elapsed();
         out.stats.push(("width_tried".into(), (*w * 100.0) as u64));
-        if out.status == "complete" {
+        if out.is_settled() {
             return Ok(out);
         }
         w_last = *w;
         last = Some(out);
     }
     // 予定を終えても時間が残っていれば（探索が手詰まりで早く終わった場合）、幅を倍にして残り時間で続ける
+    // 幅の上限は既定 16（環境変数 FE_MAX_WIDTH で変更できる）
+    let max_w: f64 = std::env::var("FE_MAX_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(16.0);
     let mut w = w_last;
     loop {
         let remain = (start + timeout).saturating_duration_since(Instant::now());
-        if remain < Duration::from_secs(2) || remain < timeout / 10 || w >= 16.0 {
+        if remain < Duration::from_secs(2) || remain < timeout / 10 || w >= max_w {
             break;
         }
         w *= 2.0;
         let mut out = solve_once(lhs.clone(), rhs.clone(), remain, w)?;
         out.elapsed = start.elapsed();
         out.stats.push(("width_tried".into(), (w * 100.0) as u64));
-        if out.status == "complete" {
+        if out.is_settled() {
             return Ok(out);
         }
         last = Some(out);
@@ -112,8 +122,15 @@ fn solve_once(lhs: Poly, rhs: Poly, timeout: Duration, width: f64) -> Result<Sol
             pw_found.push(fam.clone());
         }
     }
+    let add_found = s.additive_family();
     let status = if concl.complete && error.is_none() {
-        "complete"
+        if concl.add_families.is_empty() {
+            "complete"
+        } else {
+            "special"
+        }
+    } else if add_found.is_some() {
+        "special_exist"
     } else if !found.is_empty() || !pw_found.is_empty() {
         "partial"
     } else {
@@ -150,6 +167,8 @@ fn solve_once(lhs: Poly, rhs: Poly, timeout: Duration, width: f64) -> Result<Sol
         found,
         pw_families: concl.pw_families.clone(),
         pw_found,
+        add_families: concl.add_families.clone(),
+        add_found,
         reasons,
         error,
         elapsed: start.elapsed(),
@@ -157,6 +176,13 @@ fn solve_once(lhs: Poly, rhs: Poly, timeout: Duration, width: f64) -> Result<Sol
         root_facts,
         kernel: s.e.k,
     })
+}
+
+impl SolveOutput {
+    /// 解の集合を決定したか（complete か special）
+    pub fn is_settled(&self) -> bool {
+        self.status == "complete" || self.status == "special"
+    }
 }
 
 /// 人間向けの報告（証明文は fe_render が検証核の記録から生成する）
@@ -169,9 +195,20 @@ pub fn report(out: &SolveOutput) -> String {
             s.push_str("状態: 完全解決\n");
             s.push_str(&fe_render::render(k, &concl));
         }
+        "special" => {
+            s.push_str("状態: 特殊解決\n");
+            s.push_str(&fe_render::render(k, &concl));
+        }
         _ => {
-            s.push_str(if out.status == "partial" { "状態: 部分結果\n" } else { "状態: 未解決\n" });
+            s.push_str(match out.status {
+                "special_exist" => "状態: 特殊解決（病的な解の存在）\n",
+                "partial" => "状態: 部分結果\n",
+                _ => "状態: 未解決\n",
+            });
             s.push_str(&format!("方程式: {}\n", fe_render::fmt_equation(k)));
+            if let Some(fam) = &out.add_found {
+                s.push_str(&fe_render::render_additive_exist(k, fam));
+            }
             if !out.found.is_empty() || !out.pw_found.is_empty() {
                 s.push_str("見つけた解（検証核で代入を確認済み）:\n");
                 for f in &out.found {

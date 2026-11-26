@@ -108,6 +108,8 @@ pub struct BranchRec {
     solution: Option<(Fact, Family)>,
     /// 区分的な解の確定（区間ごとの事実と族）
     pw_solution: Option<(Vec<Fact>, PwFamily)>,
+    /// 加法的な族の確定（[f − g が加法的であるという事実, 条件の事実（あれば）] と族）
+    add_solution: Option<(Vec<Fact>, AddFamily)>,
     /// 取り消された場合分けの子孫（以後どこでも使えない）
     dead: bool,
     /// この枝の場合分けから Merge で事実を持ち上げたか（取り消し不可になる）
@@ -141,6 +143,13 @@ impl BranchRec {
     }
     pub fn pw_solution(&self) -> Option<&(Vec<Fact>, PwFamily)> {
         self.pw_solution.as_ref()
+    }
+    pub fn add_solution(&self) -> Option<&(Vec<Fact>, AddFamily)> {
+        self.add_solution.as_ref()
+    }
+    /// 解の形が確定した葉か（多項式・区分的・加法的のいずれか）
+    pub fn is_settled(&self) -> bool {
+        self.solution.is_some() || self.pw_solution.is_some() || self.add_solution.is_some()
     }
 }
 
@@ -180,12 +189,55 @@ impl Family {
     }
 }
 
+/// 解であることが検証された「加法的関数を含む族」x ↦ A(x) + g(x; p̄)（A は任意の加法的関数）。
+/// 加法的関数とは、任意の実数 s, t で A(s + t) = A(s) + A(t) を満たす関数（コーシーの関数方程式の解）。
+/// 検証核は、任意の加法的関数 A と任意のパラメータの値で、この関数が方程式を満たすことを確認済み。
+/// 加法的関数には A(x) = ax の形でないもの（ハメル基底を使って作れる、グラフが平面で稠密な関数）も存在するので、
+/// この族を解にもつ方程式には病的な解が存在する。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddFamily {
+    kernel: u64,
+    g: Poly,
+    template: Poly,
+    params: Vec<Atom>,
+    kind: AddKind,
+}
+
+/// 加法的関数 A に課す条件。
+/// Involution: A(A(t)) = t（対合）、Projection: A(A(t)) = A(t)（射影）。どちらも ax の形でないもの
+/// （ハメル基底を 2 つに分け、一方で t ↦ t、他方で t ↦ −t または t ↦ 0 とした加法的関数）が存在する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddKind {
+    Free,
+    Involution,
+    Projection,
+}
+
+impl AddFamily {
+    pub fn kind(&self) -> AddKind {
+        self.kind
+    }
+    /// 元の形（パラメータは f(0) などの原子のまま）
+    pub fn g(&self) -> &Poly {
+        &self.g
+    }
+    /// パラメータを Var(2), Var(3), … に置き換えた形（引数は Var(0)）
+    pub fn template(&self) -> &Poly {
+        &self.template
+    }
+    pub fn params(&self) -> &[Atom] {
+        &self.params
+    }
+}
+
 /// 結論: すべての葉が閉じているか解の形が決まっていれば complete。
+/// add_families が空でなければ、解の集合は加法的関数を含む族を含む（病的な解をもつ）。
 #[derive(Clone, Debug)]
 pub struct Conclusion {
     pub complete: bool,
     pub families: Vec<Family>,
     pub pw_families: Vec<PwFamily>,
+    pub add_families: Vec<AddFamily>,
     pub open_leaves: Vec<BranchId>,
 }
 
@@ -225,6 +277,7 @@ impl Kernel {
                 contradiction: None,
                 solution: None,
                 pw_solution: None,
+                add_solution: None,
                 dead: false,
                 merged: false,
             }],
@@ -774,6 +827,9 @@ impl Kernel {
         if !concl.pw_families.is_empty() {
             return Err("区分的な解をもつ補題は扱わない".into());
         }
+        if !concl.add_families.is_empty() {
+            return Err("加法的な族をもつ補題は扱わない".into());
+        }
         // 閉じていない葉の解の事実を集める
         let mut gs: Vec<Poly> = Vec::new();
         let mut stack = vec![ROOT];
@@ -839,6 +895,7 @@ impl Kernel {
             contradiction: None,
             solution: None,
             pw_solution: None,
+            add_solution: None,
             dead: false,
             merged: false,
         });
@@ -852,7 +909,7 @@ impl Kernel {
         if !r.children.is_empty() {
             return Err("この枝は既に場合分けされている".into());
         }
-        if r.solution.is_some() || r.pw_solution.is_some() {
+        if r.is_settled() {
             return Err("この枝は既に解が確定している".into());
         }
         Ok(())
@@ -1039,7 +1096,7 @@ impl Kernel {
             return Err("別の検証核で検証された族".into());
         }
         let r = &self.branches[b.0 as usize];
-        if !r.children.is_empty() || r.solution.is_some() || r.pw_solution.is_some() {
+        if !r.children.is_empty() || r.is_settled() {
             return Err("葉ではないか既に解が確定している".into());
         }
         let c = self.premise(fact, b)?;
@@ -1055,12 +1112,13 @@ impl Kernel {
     pub fn conclude(&self) -> Conclusion {
         let mut families: Vec<Family> = Vec::new();
         let mut pw: Vec<PwFamily> = Vec::new();
+        let mut add: Vec<AddFamily> = Vec::new();
         let mut open = Vec::new();
-        self.collect(ROOT, &mut families, &mut pw, &mut open);
-        Conclusion { complete: open.is_empty(), families, pw_families: pw, open_leaves: open }
+        self.collect(ROOT, &mut families, &mut pw, &mut add, &mut open);
+        Conclusion { complete: open.is_empty(), families, pw_families: pw, add_families: add, open_leaves: open }
     }
 
-    fn collect(&self, b: BranchId, fams: &mut Vec<Family>, pw: &mut Vec<PwFamily>, open: &mut Vec<BranchId>) {
+    fn collect(&self, b: BranchId, fams: &mut Vec<Family>, pw: &mut Vec<PwFamily>, add: &mut Vec<AddFamily>, open: &mut Vec<BranchId>) {
         if self.is_closed(b) {
             return;
         }
@@ -1074,14 +1132,159 @@ impl Kernel {
                 if !pw.iter().any(|f| f.breaks == fam.breaks && f.pieces == fam.pieces) {
                     pw.push(fam.clone());
                 }
+            } else if let Some((_, fam)) = &r.add_solution {
+                if !add.iter().any(|f| f.template == fam.template) {
+                    add.push(fam.clone());
+                }
             } else {
                 open.push(b);
             }
             return;
         }
         for &c in &r.children {
-            self.collect(c, fams, pw, open);
+            self.collect(c, fams, pw, add, open);
         }
+    }
+
+    /// 加法的関数を含む族 x ↦ A(x) + g(x; p̄)（A は任意の加法的関数）が方程式の解であることを、
+    /// 厳密な記号計算で確かめる。g の条件は verify_solution と同じ（Var(0) とパラメータの多項式）。
+    ///
+    /// 方法: 方程式の両辺で f(t) を内側から A(t) + g(t) に置き換える。A(t) は、t を有理数係数の単項式の和
+    /// t = Σ q_i·m_i に展開して Σ q_i·A(m_i) とし、異なる単項式 m_i の A(m_i) を互いに独立な記号として扱う。
+    /// 差が x, y, パラメータ, A(m_i) の多項式として恒等的に 0 になることを確認する。
+    ///
+    /// 根拠: 加法的関数は有理数倍を保つ（A(n·s) = n·A(s) を帰納法で示し、A(s) = n·A(s/n) から A(s/n) = A(s)/n、
+    /// A(0) = 0, A(−s) = −A(s)）。よって係数 q_i が有理数なら A(Σ q_i·m_i) = Σ q_i·A(m_i) は任意の実数値の m_i で
+    /// 成り立つ（m_i が実数のパラメータを含んでもよい。A(p) を p·A(1) とはしない）。展開後の差が記号の多項式として
+    /// 恒等的に 0 なら、記号にどんな実数を入れても 0 なので、どの加法的関数 A・どのパラメータの値でも方程式が成り立つ。
+    /// （恒等的に 0 にならないときは何も結論しない。）
+    pub fn verify_additive(&self, g: &Poly) -> R<AddFamily> {
+        self.verify_additive_kind(g, AddKind::Free)
+    }
+
+    /// verify_additive の、条件つきの加法的関数版（kind が Free 以外なら g = 0 に限る）。
+    /// 展開で A(m) の m がちょうど A(u) のとき（係数 1 の単独の原子）、Involution なら A(A(u)) を u、
+    /// Projection なら A(u) に置き換える。根拠: 条件を満たす A では任意の実数 u で A(A(u)) = u（または A(u)）。
+    pub fn verify_additive_kind(&self, g: &Poly, kind: AddKind) -> R<AddFamily> {
+        if kind != AddKind::Free && !g.is_zero() {
+            return Err("条件つきの加法的な族は g = 0 に限る".into());
+        }
+        let mut params: Vec<Atom> = Vec::new();
+        for (m, _) in g.terms() {
+            for (a, _) in m.factors() {
+                match a {
+                    Atom::Var(0) => {}
+                    Atom::Var(_) => return Err("族の式に x 以外の変数がある".into()),
+                    other => {
+                        if other.has_var() {
+                            return Err("族の式の原子が x を含む（f(x) などは不可）".into());
+                        }
+                        if !params.contains(other) {
+                            params.push(other.clone());
+                        }
+                    }
+                }
+            }
+        }
+        params.sort();
+        let template = map_top_atoms(g, &mut |a| match a {
+            Atom::Var(0) => Poly::var(0),
+            other => {
+                let k = params.iter().position(|p| p == other).unwrap() as u32;
+                Poly::var(2 + k)
+            }
+        });
+        let np = params.len() as u32;
+        // 展開後の A(m) は原子 F(m) で表す（元の f とは別の記号。展開の結果に元の f は残らない）
+        let apply = |t: &Poly| -> Poly {
+            t.transform(&mut |a| match a {
+                Atom::F(arg) => {
+                    let mut out = Poly::zero();
+                    for (m, c) in arg.terms() {
+                        // m が A(u)（係数 1・指数 1 の単独の原子）なら条件で書き換える
+                        let inner = match m.factors() {
+                            [(Atom::F(u), 1)] => Some((**u).clone()),
+                            _ => None,
+                        };
+                        let term = match (kind, inner) {
+                            (AddKind::Involution, Some(u)) => u,
+                            (AddKind::Projection, Some(u)) => Poly::f(u),
+                            _ => Poly::f(Poly::mono(m.clone(), Q::one())),
+                        };
+                        out = out.add(&term.scale(c));
+                    }
+                    let mut s = vec![(*arg).clone(), Poly::var(1)];
+                    for k in 0..np {
+                        s.push(Poly::var(2 + k));
+                    }
+                    out.add(&template.subst_vars(&s))
+                }
+                other => Poly::from_atom(other),
+            })
+        };
+        if self.lhs.has_inv() || self.rhs.has_inv() {
+            return Err("逆数を含む方程式は扱わない".into());
+        }
+        let lhs = apply(&self.lhs);
+        let rhs = apply(&self.rhs);
+        if !lhs.sub(&rhs).is_zero() {
+            return Err("任意の加法的関数については方程式を恒等的には満たさない".into());
+        }
+        Ok(AddFamily { kernel: self.id, g: g.clone(), template, params, kind })
+    }
+
+    /// 葉 b で「∀x,y. f(x+y) − f(x) − f(y) − (g(x+y) − g(x) − g(y)) = 0」が成り立ち、x ↦ A(x) + g(x) が
+    /// 検証済みの加法的な族なら、その葉を「解が確定（加法的な族）」とする。
+    /// 根拠: h(x) = f(x) − g(x) とおくと事実は h(x+y) = h(x) + h(y)、つまり h は加法的なので f = h + g は族に属する
+    /// （g のパラメータ f(0) などは、この f での値をとる）。この葉の解は族に含まれ、族はすべて解である。
+    pub fn mark_additive(&mut self, b: BranchId, fact: Fact, fam: AddFamily) -> R<()> {
+        if fam.kind != AddKind::Free {
+            return Err("条件つきの族は mark_additive_constrained を使う".into());
+        }
+        self.mark_additive_inner(b, fact, None, fam)
+    }
+
+    /// 条件つきの加法的な族（g = 0）での確定: 葉 b に加法性「∀x,y. f(x+y) − f(x) − f(y) = 0」と
+    /// 条件「∀x. f(f(x)) − x = 0」（Involution）または「∀x. f(f(x)) − f(x) = 0」（Projection）があれば、
+    /// f は条件を満たす加法的関数なので族に属する。
+    pub fn mark_additive_constrained(&mut self, b: BranchId, fact: Fact, constraint: Fact, fam: AddFamily) -> R<()> {
+        let x = Poly::var(0);
+        let ffx = Poly::f(Poly::f(x.clone()));
+        let want = match fam.kind {
+            AddKind::Free => return Err("条件のない族は mark_additive を使う".into()),
+            AddKind::Involution => Clause::new(1, vec![Lit::eq(ffx.sub(&x))])?,
+            AddKind::Projection => Clause::new(1, vec![Lit::eq(ffx.sub(&Poly::f(x)))])?,
+        };
+        if *self.premise(constraint, b)? != want {
+            return Err("条件の事実の形が違う".into());
+        }
+        self.mark_additive_inner(b, fact, Some(constraint), fam)
+    }
+
+    fn mark_additive_inner(&mut self, b: BranchId, fact: Fact, constraint: Option<Fact>, fam: AddFamily) -> R<()> {
+        self.check_branch(b)?;
+        if fam.kernel != self.id {
+            return Err("別の検証核で検証された族".into());
+        }
+        let r = &self.branches[b.0 as usize];
+        if !r.children.is_empty() || r.is_settled() {
+            return Err("葉ではないか既に解が確定している".into());
+        }
+        let c = self.premise(fact, b)?;
+        let x = Poly::var(0);
+        let y = Poly::var(1);
+        let gxy = fam.g.subst_vars(&[x.add(&y)]);
+        let gx = fam.g.subst_vars(&[x.clone()]);
+        let gy = fam.g.subst_vars(&[y.clone()]);
+        let core = Poly::f(x.add(&y)).sub(&Poly::f(x)).sub(&Poly::f(y));
+        let want = Clause::new(2, vec![Lit::eq(core.sub(&gxy.sub(&gx).sub(&gy)))])?;
+        if *c != want {
+            return Err("事実が ∀x,y. f(x+y) − f(x) − f(y) = g(x+y) − g(x) − g(y) の形ではない".into());
+        }
+        let mut facts = vec![fact];
+        facts.extend(constraint);
+        self.branches[b.0 as usize].add_solution = Some((facts, fam));
+        Ok(())
     }
 
     /// 区分的な族が解であることを確かめる（詳細は piecewise モジュール）
@@ -1100,7 +1303,7 @@ impl Kernel {
             return Err("別の検証核で検証された族".into());
         }
         let r = &self.branches[b.0 as usize];
-        if !r.children.is_empty() || r.solution.is_some() || r.pw_solution.is_some() {
+        if !r.children.is_empty() || r.is_settled() {
             return Err("葉ではないか既に解が確定している".into());
         }
         if facts.len() != fam.pieces.len() {

@@ -302,6 +302,9 @@ fn proof_roots(k: &Kernel, b: BranchId, out: &mut Vec<Fact>) {
     if let Some((fs, _)) = r.pw_solution() {
         out.extend(fs.iter().copied());
     }
+    if let Some((fs, _)) = r.add_solution() {
+        out.extend(fs.iter().copied());
+    }
     if let Some(Split::Components { fact }) = r.split() {
         out.push(*fact);
     }
@@ -545,6 +548,131 @@ pub fn fmt_family(fam: &fe_kernel::Family) -> String {
     s
 }
 
+/// 加法的な族の表示: f(x) = A(x) + g(x)（A は任意の加法的関数、パラメータは c, c1, …）
+pub fn fmt_add_family(fam: &fe_kernel::AddFamily) -> String {
+    let np = fam.params().len();
+    let name = move |i: usize| if np == 1 { "c".to_string() } else { format!("c{}", i + 1) };
+    let pf = move |a: &Atom| match a {
+        Atom::Var(i) if *i >= 2 => Some(name((*i - 2) as usize)),
+        _ => None,
+    };
+    let n = Names { param: Some(&pf) };
+    let t = fam.template();
+    let mut s = if t.is_zero() {
+        "f(x) = A(x)".to_string()
+    } else {
+        let g = fmt_poly(t, &n);
+        if g.starts_with('-') {
+            format!("f(x) = A(x) - {}", &g[1..].trim_start())
+        } else {
+            format!("f(x) = A(x) + {}", g)
+        }
+    };
+    let mut notes = vec![match fam.kind() {
+        fe_kernel::AddKind::Free => "A は任意の加法的関数".to_string(),
+        fe_kernel::AddKind::Involution => "A は A(A(x)) = x を満たす任意の加法的関数".to_string(),
+        fe_kernel::AddKind::Projection => "A は A(A(x)) = A(x) を満たす任意の加法的関数".to_string(),
+    }];
+    if np > 0 {
+        let ps: Vec<String> = (0..np).map(name).collect();
+        notes.push(format!("{} は任意の実数", ps.join(", ")));
+    }
+    s.push_str(&format!("（{}）", notes.join("、")));
+    s
+}
+
+/// 多項式の族 g'(x; p̄) のすべての関数が加法的な族 {A + t} に含まれるか（表示で重複を省くため）。
+/// t = 0 なら g' が x について斉次 1 次（ax の形）、t が単独のパラメータ c なら g' が x の 1 次以下なら含まれる。
+pub fn subsumed_by_additive(fam: &fe_kernel::Family, add: &fe_kernel::AddFamily) -> bool {
+    let xdeg = |m: &fe_kernel::Mono| m.factors().iter().filter(|(a, _)| *a == Atom::Var(0)).map(|(_, e)| *e).sum::<u32>();
+    let terms = fam.template().terms();
+    let t = add.template();
+    if add.kind() != fe_kernel::AddKind::Free {
+        // 条件つき: パラメータのない ax で、a² = 1（対合）または a² = a（射影）
+        if !fam.params().is_empty() || !terms.iter().all(|(m, _)| xdeg(m) == 1 && m.factors().len() == 1) {
+            return false;
+        }
+        let a = terms.first().map(|(_, c)| c.clone()).unwrap_or_else(|| Q::from_integer(0.into()));
+        return match add.kind() {
+            fe_kernel::AddKind::Involution => a.clone() * a.clone() == Q::from_integer(1.into()),
+            _ => a.clone() * a.clone() == a,
+        };
+    }
+    if t.is_zero() {
+        terms.iter().all(|(m, _)| xdeg(m) == 1)
+    } else if *t == Poly::var(2) {
+        terms.iter().all(|(m, _)| xdeg(m) <= 1)
+    } else {
+        false
+    }
+}
+
+/// 加法的な族を代入した両辺（A を有理数係数の和について展開したもの。A(m) を "A(m)" と表示する）
+fn additive_sides(k: &Kernel, fam: &fe_kernel::AddFamily) -> (String, String) {
+    let (l, r) = k.equation();
+    let t = fam.template().clone();
+    let np = fam.params().len() as u32;
+    let apply = |p: &Poly| {
+        p.transform(&mut |a| match a {
+            Atom::F(arg) => {
+                let mut out = Poly::zero();
+                for (m, c) in arg.terms() {
+                    let inner = match m.factors() {
+                        [(Atom::F(u), 1)] => Some((**u).clone()),
+                        _ => None,
+                    };
+                    let term = match (fam.kind(), inner) {
+                        (fe_kernel::AddKind::Involution, Some(u)) => u,
+                        (fe_kernel::AddKind::Projection, Some(u)) => Poly::f(u),
+                        _ => Poly::f(Poly::mono(m.clone(), Q::from_integer(1.into()))),
+                    };
+                    out = out.add(&term.scale(c));
+                }
+                let mut s = vec![(*arg).clone(), Poly::var(1)];
+                for i in 0..np {
+                    s.push(Poly::var(2 + i));
+                }
+                out.add(&t.subst_vars(&s))
+            }
+            other => Poly::from_atom(other),
+        })
+    };
+    let params = fam.params().len();
+    let pn = move |i: u32| if params == 1 { "c".to_string() } else { format!("c{}", i + 1) };
+    let pf = move |a: &Atom| match a {
+        Atom::Var(i) if *i >= 2 => Some(pn(i - 2)),
+        _ => None,
+    };
+    let n = Names { param: Some(&pf) };
+    // 展開後の f はすべて A を表す
+    let show = |p: &Poly| fmt_poly(p, &n).replace("f(", "A(");
+    (show(&apply(l)), show(&apply(r)))
+}
+
+/// 加法的な族が解であることの確認文（検算・病的な解の存在の説明に使う。正しさは検証核が確認済み）
+fn additive_check(k: &Kernel, fam: &fe_kernel::AddFamily) -> String {
+    let (l, r) = additive_sides(k, fam);
+    let (rule, example) = match fam.kind() {
+        fe_kernel::AddKind::Free => ("", "ハメル基底を使って作れる"),
+        fe_kernel::AddKind::Involution => ("、A(A(t)) = t", "ハメル基底を 2 つに分け、一方で t ↦ t、他方で t ↦ −t とする"),
+        fe_kernel::AddKind::Projection => ("、A(A(t)) = A(t)", "ハメル基底を 2 つに分け、一方で t ↦ t、他方で t ↦ 0 とする"),
+    };
+    format!(
+        "{} を代入し、A(有理数係数の和) = 有理数係数の A の和{} で展開すると 左辺 = {}、右辺 = {} で一致する。\n\
+         このような A には ax の形でないもの（{}）も存在するので、これらは病的な解である。",
+        fmt_add_family(fam),
+        rule,
+        l,
+        r,
+        example
+    )
+}
+
+/// 解の集合は未確定だが、任意の加法的関数を含む族が解であること（病的な解の存在）の報告
+pub fn render_additive_exist(k: &Kernel, fam: &fe_kernel::AddFamily) -> String {
+    format!("【病的な解の存在】\n{}\nほかに解があるかどうかは示せていない。\n", additive_check(k, fam))
+}
+
 /// 区分的な族の表示（区切り点の値が隣の区間の式と一致すればまとめる）
 pub fn fmt_pw(fam: &fe_kernel::PwFamily) -> String {
     let n = Names::plain();
@@ -644,6 +772,19 @@ fn render_branch(ctx: &mut Ctx, b: BranchId, need: &BTreeSet<Fact>, depth: usize
         let _ = writeln!(ctx.out, "{}{} より、この場合は {} である。", indent, ls.join(", "), fmt_pw(fam));
         return;
     }
+    if let Some((fs, fam)) = r.add_solution() {
+        let what = if fam.g().is_zero() {
+            "f は加法的".to_string()
+        } else {
+            format!("f(x) - ({}) は加法的", fmt_poly(fam.g(), &Names::plain()))
+        };
+        let mut reason = format!("{} より {}", ctx.lbl(fs[0]), what);
+        if let Some(c) = fs.get(1) {
+            reason.push_str(&format!("、{} より {}", ctx.lbl(*c), fmt_clause(k.clause(*c), &Names::plain())));
+        }
+        let _ = writeln!(ctx.out, "{}{}なので、この場合は {} である。", indent, reason, fmt_add_family(fam));
+        return;
+    }
     let children = r.children().to_vec();
     if children.is_empty() {
         let _ = writeln!(ctx.out, "{}（この場合は未解決）", indent);
@@ -701,8 +842,10 @@ pub fn render(k: &Kernel, concl: &Conclusion) -> String {
     ctx.label.remove(&k.axiom());
     ctx.emit(k.axiom(), "");
     if concl.complete {
-        let mut fams: Vec<String> = concl.families.iter().map(fmt_family).collect();
+        let mut fams: Vec<String> =
+            concl.families.iter().filter(|f| !concl.add_families.iter().any(|a| subsumed_by_additive(f, a))).map(fmt_family).collect();
         fams.extend(concl.pw_families.iter().map(fmt_pw));
+        fams.extend(concl.add_families.iter().map(fmt_add_family));
         if fams.is_empty() {
             let _ = writeln!(ctx.out, "\n【結論】解は存在しない。");
         } else {
@@ -711,8 +854,11 @@ pub fn render(k: &Kernel, concl: &Conclusion) -> String {
     }
     let _ = writeln!(ctx.out, "\n【証明】");
     render_branch(&mut ctx, ROOT, &need, 0, "");
-    if !concl.families.is_empty() || !concl.pw_families.is_empty() {
+    if !concl.families.is_empty() || !concl.pw_families.is_empty() || !concl.add_families.is_empty() {
         let _ = writeln!(ctx.out, "\n【検算】");
+        for fam in &concl.add_families {
+            let _ = writeln!(ctx.out, "{}", additive_check(k, fam));
+        }
         for fam in &concl.pw_families {
             let _ = writeln!(
                 ctx.out,
@@ -721,7 +867,7 @@ pub fn render(k: &Kernel, concl: &Conclusion) -> String {
             );
         }
         let n = Names::plain();
-        for fam in &concl.families {
+        for fam in concl.families.iter().filter(|f| !concl.add_families.iter().any(|a| subsumed_by_additive(f, a))) {
             let (l, r) = substituted_sides(k, fam);
             let params = fam.params().len();
             let pn = |i: u32| if params == 1 { "c".to_string() } else { format!("c{}", i + 1) };

@@ -21,6 +21,11 @@
 //! ```
 //!
 //! ```compile_fail
+//! // 検証済みの加法的な族も外から作れない
+//! let fam = fe_kernel::AddFamily { kernel: 1, g: fe_kernel::Poly::zero(), template: fe_kernel::Poly::zero(), params: vec![], kind: fe_kernel::AddKind::Free };
+//! ```
+//!
+//! ```compile_fail
 //! // 検証済みの区分的な族も外から作れない
 //! let fam = fe_kernel::PwFamily { kernel: 1, breaks: vec![], pieces: vec![] };
 //! ```
@@ -42,6 +47,6 @@ pub mod piecewise;
 pub mod poly;
 
 pub use clause::{Clause, Lit, Rel};
-pub use kernel::{BranchId, Conclusion, Fact, Family, Kernel, Rule, Split, ROOT};
+pub use kernel::{AddFamily, AddKind, BranchId, Conclusion, Fact, Family, Kernel, Rule, Split, ROOT};
 pub use piecewise::PwFamily;
 pub use poly::{Atom, Mono, Poly, Q};

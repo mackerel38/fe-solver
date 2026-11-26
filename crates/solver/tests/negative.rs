@@ -2,7 +2,8 @@
 //! いずれもソルバ全体（探索部＋検証核）を実際に走らせて確かめる。
 
 use fe_kernel::poly::{q, qf};
-use fe_kernel::{Kernel, Poly, Q};
+use fe_kernel::{AddKind, Kernel, Poly, Q};
+use num_traits::Zero;
 use fe_solver::parse::parse_general;
 use fe_solver::problems::load_problems;
 use fe_solver::solve::{solve, SolveOutput};
@@ -55,7 +56,27 @@ fn family_contains(template: &Poly, nparams: usize, a: &Q, b: &Q) -> bool {
     false
 }
 
-/// 完全解決と主張したなら: 各族が（新しい検証核でも）解であり、総当たりの解をすべて含む
+/// 加法的な族 {A + t} が 1 次関数 ax + b を含むか（t = 0 なら b = 0、t が単独のパラメータなら常に。
+/// 条件つきの族なら t = 0 で、さらに a² = 1（対合）または a² = a（射影））
+fn add_family_contains(fam: &fe_kernel::AddFamily, a: &fe_kernel::Q, b: &fe_kernel::Q) -> bool {
+    let t = fam.template();
+    match fam.kind() {
+        AddKind::Free => {
+            if t.is_zero() {
+                b.is_zero()
+            } else {
+                *t == Poly::var(2)
+            }
+        }
+        AddKind::Involution => t.is_zero() && b.is_zero() && a.clone() * a.clone() == q(1),
+        AddKind::Projection => t.is_zero() && b.is_zero() && a.clone() * a.clone() == a.clone(),
+    }
+}
+
+/// 報告した族がすべて（新しい検証核でも）解であること。
+/// 完全解決と主張したなら総当たりの解をすべて含み、しかも「任意の加法的関数が解」ではないこと
+/// （そうなら多項式で書けない病的な解があるので、多項式・区分的な族だけの完全解決は誤り）。
+/// 特殊解決と主張したなら、加法的な族が解で、総当たりの解をすべて含むこと。
 fn check_sound(eq_desc: &str, l: &Poly, r: &Poly, out: &SolveOutput) {
     let fresh = Kernel::new(l.clone(), r.clone()).unwrap();
     for f in out.found.iter().chain(out.families.iter()) {
@@ -64,10 +85,30 @@ fn check_sound(eq_desc: &str, l: &Poly, r: &Poly, out: &SolveOutput) {
     for f in out.pw_found.iter().chain(out.pw_families.iter()) {
         assert!(fresh.verify_piecewise(f.breaks().to_vec(), f.pieces().to_vec()).is_ok(), "{}: 解でない区分的な族を報告した", eq_desc);
     }
+    for f in out.add_found.iter().chain(out.add_families.iter()) {
+        assert!(fresh.verify_additive_kind(f.g(), f.kind()).is_ok(), "{}: 解でない加法的な族を報告した: {:?}", eq_desc, f.g());
+    }
+    if out.status == "special" || out.status == "special_exist" {
+        assert!(out.add_found.is_some(), "{}: 特殊解決なのに加法的な族の検証がない", eq_desc);
+    }
+    if out.status == "special" {
+        assert!(!out.add_families.is_empty(), "{}: 特殊解決なのに加法的な族の葉がない", eq_desc);
+    }
     if out.status == "complete" {
+        assert!(
+            fresh.verify_additive(&Poly::zero()).is_err()
+                && fresh.verify_additive(&Poly::f(Poly::zero())).is_err()
+                && fresh.verify_additive_kind(&Poly::zero(), AddKind::Involution).is_err()
+                && fresh.verify_additive_kind(&Poly::zero(), AddKind::Projection).is_err(),
+            "{}: 病的な加法的関数の族が解なのに、多項式・区分的な族だけで完全解決と主張した",
+            eq_desc
+        );
+    }
+    if out.status == "complete" || out.status == "special" {
         for (a, b) in brute_force_linear(l, r) {
-            let ok = out.families.iter().any(|f| family_contains(f.template(), f.params().len(), &a, &b));
-            assert!(ok, "{}: 完全解決と主張したが解 {}x + {} が含まれない", eq_desc, a, b);
+            let ok = out.families.iter().any(|f| family_contains(f.template(), f.params().len(), &a, &b))
+                || out.add_families.iter().any(|f| add_family_contains(f, &a, &b));
+            assert!(ok, "{}: 解の集合を決めたと主張したが解 {}x + {} が含まれない", eq_desc, a, b);
         }
         // 区分的な解（区切り点 0、各側 ±x, 0, ±1）を総当たりで探し、完全解決の答えに含まれることを確かめる
         let side = [Poly::var(0), Poly::var(0).neg(), Poly::zero(), Poly::int(1), Poly::int(-1)];
@@ -79,7 +120,12 @@ fn check_sound(eq_desc: &str, l: &Poly, r: &Poly, out: &SolveOutput) {
                         continue;
                     }
                     let as_poly = gl == gr && v == gl.subst_vars(&[Poly::zero()]);
-                    let ok = if as_poly {
+                    let lin_b = gl.terms().iter().find(|(m, _)| m.is_one()).map(|(_, c)| c.clone()).unwrap_or_else(|| q(0));
+                    let lin = gl.terms().iter().all(|(m, _)| m.degree() <= 1);
+                    let lin_a = gl.terms().iter().find(|(m, _)| !m.is_one()).map(|(_, c)| c.clone()).unwrap_or_else(|| q(0));
+                    let ok = if as_poly && lin && out.add_families.iter().any(|f| add_family_contains(f, &lin_a, &lin_b)) {
+                        true
+                    } else if as_poly {
                         out.families.iter().any(|f| f.params().is_empty() && f.template() == gl)
                             || out.families.iter().any(|f| {
                                 let cs = gl.terms();
@@ -114,6 +160,39 @@ fn negative_pathological_equations_are_not_complete() {
     ] {
         let out = run(eq);
         assert_ne!(out.status, "complete", "{}: 解の集合が多項式の族ではないのに完全解決と主張した", eq);
+        let (l, r) = parse_general(eq).unwrap();
+        check_sound(eq, &l, &r, &out);
+    }
+}
+
+#[test]
+fn negative_special_only_when_additive_functions_are_solutions() {
+    // 加法的関数（条件なし・対合・射影）の族が解ではない方程式で特殊解決と主張しないこと
+    for eq in ["f(x*y) = f(x)*f(y)", "f(x^2) = f(x)^2", "f(x)^2 = x^2", "f(x*f(y)) = y*f(x)", "f(x + y) = f(x)*f(y)"] {
+        let out = run(eq);
+        assert!(
+            out.status != "special" && out.status != "special_exist",
+            "{}: 任意の加法的関数が解ではないのに特殊解決と主張した",
+            eq
+        );
+        let (l, r) = parse_general(eq).unwrap();
+        check_sound(eq, &l, &r, &out);
+    }
+}
+
+#[test]
+fn special_for_cauchy_type_equations() {
+    // 解の集合が加法的関数全体（と多項式の解）になる方程式は特殊解決になる
+    for eq in ["f(x + y) = f(x) + f(y)", "f(x - y) = f(x) - f(y)", "f(x + y^2) = f(x) + f(y^2)"] {
+        let out = run(eq);
+        assert_eq!(out.status, "special", "{}", eq);
+        let (l, r) = parse_general(eq).unwrap();
+        check_sound(eq, &l, &r, &out);
+    }
+    // 条件つきの加法的関数（射影 A(A(x)) = A(x)・対合 A(A(x)) = x）がすべて解になる方程式は、少なくとも病的な解の存在を示す
+    for eq in ["f(x + f(y)) = f(x) + f(y)", "f(f(x)) = x", "f(x + f(y)) = f(x) + y", "f(f(x) + f(y)) = x + y"] {
+        let out = run(eq);
+        assert!(out.status == "special" || out.status == "special_exist", "{}: {}", eq, out.status);
         let (l, r) = parse_general(eq).unwrap();
         check_sound(eq, &l, &r, &out);
     }
