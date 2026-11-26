@@ -32,6 +32,7 @@ h1 { margin:0 0 24px; }
 .filters button { font:inherit; font-size:.95rem; background:#fff; color:#111; border:1px solid #c8c8c8;
   border-radius:8px; padding:6px 14px; cursor:pointer; }
 .filters button.on { background:#222; color:#fff; border-color:#222; }
+.filters .gap { width:16px; }
 .list { display:grid; grid-template-columns:repeat(auto-fit,minmax(450px,1fr)); gap:16px; }
 .card { display:block; color:inherit; text-decoration:none; border-left:6px solid; border-radius:10px; padding:18px 20px;
   transition: background .15s; }
@@ -57,10 +58,16 @@ pre { background:#fff; border:1px solid #e2e2e2; border-radius:10px; padding:16p
 
 FILTER_JS = """
 <script>
+// st: ソルバの結果, site: 問題集サイトでの状態（データ取得時点）
+const state = { st: 'all', site: 'all' };
 for (const b of document.querySelectorAll('.filters button')) {
   b.addEventListener('click', () => {
-    for (const o of document.querySelectorAll('.filters button')) o.classList.toggle('on', o === b);
-    for (const c of document.querySelectorAll('.card')) c.hidden = !(b.dataset.v === 'all' || c.dataset.st === b.dataset.v);
+    const k = b.dataset.k;
+    state[k] = b.dataset.v;
+    for (const o of document.querySelectorAll('.filters button[data-k="' + k + '"]')) o.classList.toggle('on', o === b);
+    for (const c of document.querySelectorAll('.card')) {
+      c.hidden = !((state.st === 'all' || c.dataset.st === state.st) && (state.site === 'all' || c.dataset.site === state.site));
+    }
   });
 }
 </script>
@@ -147,8 +154,13 @@ def main():
 
     stats = (stat(total, "全問題") + stat(done, "完全解決", "ok") + stat(total - done, "未完了", "ng") +
              stat(f"{100 * done / total:.1f}%" if total else "—", "解決率", "ok"))
-    filters = ('<div class="filters"><button data-v="all" class="on">すべて</button>'
-               '<button data-v="ok">完全解決</button><button data-v="ng">未完了</button></div>')
+    filters = ('<div class="filters">'
+               '<button data-k="st" data-v="all" class="on">すべて</button>'
+               '<button data-k="st" data-v="ok">完全解決</button><button data-k="st" data-v="ng">未完了</button>'
+               '<span class="gap"></span>'
+               '<button data-k="site" data-v="all" class="on">All</button>'
+               '<button data-k="site" data-v="open">Open</button><button data-k="site" data-v="solved">Solved</button>'
+               '</div>')
     cards = ""
     for pid in ids:
         r = results.get(pid)
@@ -157,7 +169,7 @@ def main():
         h, cls = head(pid, r)
         s = sols(r)
         sol_html = f'<div class="sol">{esc(s)}</div>' if s and r["status"] == "complete" else ""
-        cards += (f'<a class="card {cls}" href="p/{pid}.html" data-st="{cls}">{h}'
+        cards += (f'<a class="card {cls}" href="p/{pid}.html" data-st="{cls}" data-site="{esc(problems[pid]["status"])}">{h}'
                   f'<div class="eq">{math(problems[pid]["equations"][0]["display"])}</div>{sol_html}</a>')
     body = f'<h1>FE Solver</h1><div class="stats">{stats}</div>{filters}<div class="list">{cards}</div>{FILTER_JS}'
     with open(os.path.join(args.out, "index.html"), "w", encoding="utf-8") as fp:
