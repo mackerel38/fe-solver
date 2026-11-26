@@ -960,6 +960,14 @@ impl Searcher {
                 pool.push(x().add(&Poly::one()));
                 pool.push(x().sub(&Poly::one()));
             }
+            if round >= 3 {
+                let f0 = Poly::f(Poly::zero());
+                pool.push(x().scale(&fe_kernel::poly::q(2)));
+                pool.push(x().scale(&fe_kernel::poly::qf(1, 2)));
+                pool.push(f0.clone());
+                pool.push(x().add(&f0));
+                pool.push(Poly::f(x()).neg());
+            }
             let all_ones: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
             for f in all_ones {
                 let p = self.e.poly0(f);
