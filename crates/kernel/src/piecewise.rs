@@ -12,6 +12,10 @@
 //!   3. 各場合で、左辺 − 右辺が恒等的に 0 になるか、記録した条件が両立しない（同じ v が異なる区間に属する）
 //!      ことを確認する。点の区間 {b} の条件 v = b は、v が変数について定数係数の 1 次なら代入して使う。
 //!   どの場合も示せなければ検証は失敗する（健全だが不完全）。
+//!
+//! 点の区間 {b} の式には、パラメータ（Var(2), Var(3), …。任意の実数を表す）を使ってよい（x ≠ 0 で 0、x = 0 で任意の c など）。
+//! パラメータを含む式の符号はわからないものとして扱う（引数の区間への所属は場合分けされる）ので、検証はパラメータの
+//! すべての値について成り立つことを示す。条件 v = b は、v がパラメータについて定数係数の 1 次でも代入して使う。
 
 use crate::poly::{Atom, Poly, Q};
 use num_traits::{One, Signed, Zero};
@@ -25,6 +29,13 @@ pub struct PwFamily {
 }
 
 impl PwFamily {
+    /// 式に現れるパラメータ（Var(2) 以降の番号）
+    pub fn params(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = self.pieces.iter().flat_map(|g| g.vars()).filter(|&v| v >= 2).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
     pub fn breaks(&self) -> &[Q] {
         &self.breaks
     }
@@ -196,7 +207,9 @@ fn case_ok(case: &Case, breaks: &[Q]) -> bool {
             }
             let b = breaks[(i - 1) / 2].clone();
             let d = v.sub(&Poly::constant(b));
-            for var in [0u32, 1] {
+            let mut vars: Vec<u32> = d.vars().into_iter().collect();
+            vars.sort();
+            for var in vars {
                 let a = Atom::Var(var);
                 let mut coef: Option<Q> = None;
                 let mut rest = Poly::zero();
@@ -215,7 +228,8 @@ fn case_ok(case: &Case, breaks: &[Q]) -> bool {
                     continue;
                 }
                 let val = rest.neg().scale(&(Q::one() / coef.unwrap()));
-                let mut s = vec![Poly::var(0), Poly::var(1)];
+                let n = (var as usize + 1).max(2);
+                let mut s: Vec<Poly> = (0..n as u32).map(Poly::var).collect();
                 s[var as usize] = val;
                 value = value.subst_vars(&s);
                 conds = conds.iter().map(|(p, j)| (p.subst_vars(&s), *j)).collect();
@@ -261,11 +275,17 @@ pub(crate) fn verify(lhs: &Poly, rhs: &Poly, breaks: &[Q], pieces: &[Poly]) -> R
     if pieces.len() != 2 * breaks.len() + 1 {
         return Err("区間の数が合わない".into());
     }
-    for g in pieces {
+    for (i, g) in pieces.iter().enumerate() {
         for (m, _) in g.terms() {
             for (a, _) in m.factors() {
-                if *a != Atom::Var(0) {
-                    return Err("各区間の式は x の有理数係数の多項式でなければならない".into());
+                let ok = match a {
+                    Atom::Var(0) => true,
+                    // パラメータは点の区間の式にだけ使える
+                    Atom::Var(k) if *k >= 2 => i % 2 == 1,
+                    _ => false,
+                };
+                if !ok {
+                    return Err("各区間の式は x の有理数係数の多項式（点の区間ではパラメータも可）でなければならない".into());
                 }
             }
         }

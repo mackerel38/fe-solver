@@ -1297,7 +1297,9 @@ impl Kernel {
     /// 葉を「解が確定」とする。facts[i] の節は、f を含む等式リテラル λ(f(t) − h) = 0（t = x、または点の区間では
     /// t = 区切り点）がちょうど 1 つで、他のリテラルは x の 1 次式でその区間全体で偽、h は区間上で g_i と一致すること。
     /// 根拠: 区間上では他のリテラルが偽なので f(x) = h(x) = g_i(x)。区間は実数全体を覆う。
-    pub fn mark_piecewise(&mut self, b: BranchId, facts: Vec<Fact>, fam: PwFamily) -> R<()> {
+    /// 点の区間の式が単独のパラメータ c（他の区間に現れない）なら、その区間の事実は不要（None）。
+    /// 根拠: その点での f の値を c とすれば、f は族に属する（族はすべての c について解であることを検証済み）。
+    pub fn mark_piecewise(&mut self, b: BranchId, facts: Vec<Option<Fact>>, fam: PwFamily) -> R<()> {
         self.check_branch(b)?;
         if fam.kernel != self.id {
             return Err("別の検証核で検証された族".into());
@@ -1309,7 +1311,27 @@ impl Kernel {
         if facts.len() != fam.pieces.len() {
             return Err("区間の数と事実の数が合わない".into());
         }
+        let mut used: Vec<Fact> = Vec::new();
         for (i, f) in facts.iter().enumerate() {
+            let f = match f {
+                Some(f) => {
+                    used.push(*f);
+                    f
+                }
+                None => {
+                    let k = match fam.pieces[i].terms() {
+                        [(m, c)] if c.is_one() && m.factors().len() == 1 && m.factors()[0].1 == 1 => match m.factors()[0].0 {
+                            Atom::Var(k) if k >= 2 => k,
+                            _ => return Err("事実を省けるのは、点の区間の式が単独のパラメータのときだけ".into()),
+                        },
+                        _ => return Err("事実を省けるのは、点の区間の式が単独のパラメータのときだけ".into()),
+                    };
+                    if i % 2 == 0 || fam.pieces.iter().enumerate().any(|(j, g)| j != i && g.vars().contains(&k)) {
+                        return Err("パラメータは 1 つの点の区間にだけ現れなければならない".into());
+                    }
+                    continue;
+                }
+            };
             let c = self.premise(*f, b)?.clone();
             let (lo, hi) = fam.interval(i);
             let point = i % 2 == 1;
@@ -1361,7 +1383,7 @@ impl Kernel {
                 return Err("f(x) = h(x) のリテラルがない".into());
             }
         }
-        self.branches[b.0 as usize].pw_solution = Some((facts, fam));
+        self.branches[b.0 as usize].pw_solution = Some((used, fam));
         Ok(())
     }
 }

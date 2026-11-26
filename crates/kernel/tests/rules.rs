@@ -496,8 +496,8 @@ fn piecewise_marking() {
     let (b, p) = abs_pieces();
     let fam = k.verify_piecewise(b.clone(), p.clone()).unwrap();
     // 区間の順序は (−∞,0), {0}, (0,∞)
-    assert!(k.mark_piecewise(c0, vec![ha, hc, hb], fam.clone()).is_err(), "区間と事実の対応が違う");
-    k.mark_piecewise(c0, vec![hb, hc, ha], fam).unwrap();
+    assert!(k.mark_piecewise(c0, vec![Some(ha), Some(hc), Some(hb)], fam.clone()).is_err(), "区間と事実の対応が違う");
+    k.mark_piecewise(c0, vec![Some(hb), Some(hc), Some(ha)], fam).unwrap();
     let concl = k.conclude();
     assert_eq!(concl.pw_families.len(), 1);
     assert!(!concl.complete, "他の枝が開いている");
@@ -512,7 +512,7 @@ fn piecewise_marking_rejects_insufficient_conditions() {
     let (c0, hc, _, _, _) = k.split_em(b0, cl(0, vec![Lit::eq(f(c(0)))])).unwrap();
     let (b, p) = abs_pieces();
     let fam = k.verify_piecewise(b, p).unwrap();
-    assert!(k.mark_piecewise(c0, vec![hb, hc, ha], fam).is_err());
+    assert!(k.mark_piecewise(c0, vec![Some(hb), Some(hc), Some(ha)], fam).is_err());
 }
 
 #[test]
@@ -703,4 +703,37 @@ fn additive_kinds_rule() {
     let concl = k.conclude();
     assert_eq!(concl.add_families.len(), 1);
     assert!(!concl.complete, "排中律の他の枝が開いている");
+}
+
+#[test]
+fn piecewise_with_parameter() {
+    // f(x + y·f(y)) = f(x) + y·f(y): 「x ≠ 0 で 0、x = 0 で任意の c」はすべて解
+    let mut k = Kernel::new(f(x().add(&y().mul(&f(y())))), f(x()).add(&y().mul(&f(y())))).unwrap();
+    let cpar = Poly::var(2);
+    let fam = k.verify_piecewise(vec![q(0)], vec![c(0), cpar.clone(), c(0)]).unwrap();
+    assert_eq!(fam.params(), vec![2]);
+    // 正の側で 1 にすると解ではない（c によらず）
+    assert!(k.verify_piecewise(vec![q(0)], vec![c(0), cpar.clone(), c(1)]).is_err());
+    // パラメータは点の区間にだけ使える
+    assert!(k.verify_piecewise(vec![q(0)], vec![cpar.clone(), c(0), c(0)]).is_err());
+    // f(x) = x: 「x ≠ 0 で x、x = 0 で任意の c」は f(x+y) = f(x) + f(y) の解ではない（c ≠ 0 で崩れる）
+    let k2 = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    assert!(k2.verify_piecewise(vec![q(0)], vec![x(), cpar.clone(), x()]).is_err());
+
+    // 確定: 負・正の側の事実（x = 0 ∨ f(x) = 0 の形）があれば、点の区間はパラメータで事実なし
+    let side = cl(1, vec![Lit::eq(x()), Lit::eq(f(x()))]);
+    let (b0, h0, _, _, _) = k.split_em(ROOT, side).unwrap();
+    // 区間の事実を省けるのはパラメータの点だけ
+    assert!(k.mark_piecewise(b0, vec![None, None, Some(h0)], fam.clone()).is_err());
+    assert!(k.mark_piecewise(b0, vec![Some(h0), None, Some(h0)], fam.clone()).is_ok());
+    assert_eq!(k.conclude().pw_families.len(), 1);
+    // 同じパラメータが 2 つの点に現れる族では、点の事実を省けない（別々のパラメータなら省ける）
+    let mut k4 = Kernel::new(f(x()), f(x())).unwrap(); // どんな関数も解
+    let d = Poly::var(3);
+    let same = k4.verify_piecewise(vec![q(0), q(1)], vec![c(0), cpar.clone(), c(0), cpar.clone(), c(0)]).unwrap();
+    let diff = k4.verify_piecewise(vec![q(0), q(1)], vec![c(0), cpar.clone(), c(0), d.clone(), c(0)]).unwrap();
+    let side4 = cl(1, vec![Lit::eq(x()), Lit::eq(x().sub(&c(1))), Lit::eq(f(x()))]);
+    let (b4, h4, _, _, _) = k4.split_em(ROOT, side4).unwrap();
+    assert!(k4.mark_piecewise(b4, vec![Some(h4), None, Some(h4), None, Some(h4)], same).is_err());
+    assert!(k4.mark_piecewise(b4, vec![Some(h4), None, Some(h4), None, Some(h4)], diff).is_ok());
 }

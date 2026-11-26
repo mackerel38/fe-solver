@@ -3,7 +3,7 @@
 
 use fe_kernel::poly::{q, qf};
 use fe_kernel::{AddKind, Kernel, Poly, Q};
-use num_traits::Zero;
+use num_traits::{One, Zero};
 use fe_solver::parse::parse_general;
 use fe_solver::problems::load_problems;
 use fe_solver::solve::{solve, SolveOutput};
@@ -73,6 +73,23 @@ fn add_family_contains(fam: &fe_kernel::AddFamily, a: &fe_kernel::Q, b: &fe_kern
     }
 }
 
+/// 区分的な族（点の区間にパラメータを含んでよい）が、区分的な関数 pieces を含むか
+fn pw_contains(fam: &fe_kernel::PwFamily, breaks: &[fe_kernel::Q], pieces: &[Poly]) -> bool {
+    if fam.breaks() != breaks || fam.pieces().len() != pieces.len() {
+        return false;
+    }
+    fam.pieces().iter().zip(pieces.iter()).enumerate().all(|(i, (g, p))| {
+        if g == p {
+            return true;
+        }
+        // 点の区間の式が単独のパラメータなら、その点での値は何でもよい
+        i % 2 == 1 && g.terms().len() == 1 && g.vars().iter().all(|&v| v >= 2) && g.vars().len() == 1 && {
+            let (m, c) = &g.terms()[0];
+            c.is_one() && m.factors().len() == 1 && m.factors()[0].1 == 1
+        }
+    })
+}
+
 /// 報告した族がすべて（新しい検証核でも）解であること。
 /// 完全解決と主張したなら総当たりの解をすべて含み、しかも「任意の加法的関数が解」ではないこと
 /// （そうなら多項式で書けない病的な解があるので、多項式・区分的な族だけの完全解決は誤り）。
@@ -106,8 +123,10 @@ fn check_sound(eq_desc: &str, l: &Poly, r: &Poly, out: &SolveOutput) {
     }
     if out.status == "complete" || out.status == "special" {
         for (a, b) in brute_force_linear(l, r) {
+            let lin = Poly::var(0).scale(&a).add(&Poly::constant(b.clone()));
             let ok = out.families.iter().any(|f| family_contains(f.template(), f.params().len(), &a, &b))
-                || out.add_families.iter().any(|f| add_family_contains(f, &a, &b));
+                || out.add_families.iter().any(|f| add_family_contains(f, &a, &b))
+                || out.pw_families.iter().any(|f| pw_contains(f, &[q(0)], &[lin.clone(), Poly::constant(b.clone()), lin.clone()]));
             assert!(ok, "{}: 解の集合を決めたと主張したが解 {}x + {} が含まれない", eq_desc, a, b);
         }
         // 区分的な解（区切り点 0、各側 ±x, 0, ±1）を総当たりで探し、完全解決の答えに含まれることを確かめる
@@ -123,7 +142,9 @@ fn check_sound(eq_desc: &str, l: &Poly, r: &Poly, out: &SolveOutput) {
                     let lin_b = gl.terms().iter().find(|(m, _)| m.is_one()).map(|(_, c)| c.clone()).unwrap_or_else(|| q(0));
                     let lin = gl.terms().iter().all(|(m, _)| m.degree() <= 1);
                     let lin_a = gl.terms().iter().find(|(m, _)| !m.is_one()).map(|(_, c)| c.clone()).unwrap_or_else(|| q(0));
-                    let ok = if as_poly && lin && out.add_families.iter().any(|f| add_family_contains(f, &lin_a, &lin_b)) {
+                    let ok = if out.pw_families.iter().any(|f| pw_contains(f, &[q(0)], &pieces)) {
+                        true
+                    } else if as_poly && lin && out.add_families.iter().any(|f| add_family_contains(f, &lin_a, &lin_b)) {
                         true
                     } else if as_poly {
                         out.families.iter().any(|f| f.params().is_empty() && f.template() == gl)
