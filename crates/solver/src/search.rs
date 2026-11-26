@@ -887,6 +887,14 @@ impl Searcher {
                     two.push(vec![x(), y().scale(&fe_kernel::poly::q(2))]);
                     two.push(vec![x().scale(&fe_kernel::poly::q(2)), y()]);
                 }
+                // f(0) だけのずらし、x − 1、x + y と −y（P(x, y + c) で c = f(0) とする解答が多い）
+                if round >= 3 {
+                    let f0 = Poly::f(Poly::zero());
+                    two.push(vec![x().sub(&Poly::one()), y()]);
+                    two.push(vec![x(), y().add(&f0)]);
+                    two.push(vec![x(), y().sub(&f0)]);
+                    two.push(vec![x().add(&y()), y().neg()]);
+                }
                 for s in two {
                     if self.closed(st) || !st.units.contains(&g) {
                         break;
