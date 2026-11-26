@@ -88,8 +88,11 @@ cargo test --release --workspace
 - `crates/kernel/src/lib.rs` の doctest: クレート外から事実を偽造できないこと（コンパイル失敗テスト）
 - `crates/solver/tests/parse_all.rs`: 全 847 問 1625 式が About ページの文法で厳密にパースでき、f(x)=x が解であること
 - `crates/solver/tests/negative.rs`: 負のテスト（複数解・病的な解をもつ方程式で一意性を主張しない、壊した方程式で偽の結論を出さない）
+- `crates/solver/tests/tactics.rs`: 手法の汎用性のテスト（問題集にない同じ類の方程式でも手法が効くこと）
 
 ## 探索の主な手法（要約）
+
+詳しい一覧（規則・解の表現・手法ごとの効く方程式の類・テスト・足りない手法）は `docs/TACTICS.md`。
 
 すべての事実は検証核の推論規則で作る。探索部はどの規則をどの順で呼ぶかを決めるだけ。
 
