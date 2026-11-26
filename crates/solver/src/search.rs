@@ -870,7 +870,7 @@ impl Searcher {
             // 2 変数のままの代入（P(f(x), y) など）
             if round >= 1 {
                 let fy = Poly::f(y());
-                let two: Vec<Vec<Poly>> = vec![
+                let mut two: Vec<Vec<Poly>> = vec![
                     vec![fx.clone(), y()],
                     vec![x(), fy.clone()],
                     vec![x().neg(), y()],
@@ -878,6 +878,15 @@ impl Searcher {
                     vec![y(), x()],
                     vec![fx.clone(), fy.clone()],
                 ];
+                // ずらし・倍の代入（P(x, y + 1), P(x + 1, y), P(x, 2y) など）
+                if round >= 2 {
+                    let one = Poly::one();
+                    two.push(vec![x(), y().add(&one)]);
+                    two.push(vec![x(), y().sub(&one)]);
+                    two.push(vec![x().add(&one), y()]);
+                    two.push(vec![x(), y().scale(&fe_kernel::poly::q(2))]);
+                    two.push(vec![x().scale(&fe_kernel::poly::q(2)), y()]);
+                }
                 for s in two {
                     if self.closed(st) || !st.units.contains(&g) {
                         break;
