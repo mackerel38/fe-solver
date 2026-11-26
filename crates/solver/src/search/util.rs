@@ -101,6 +101,63 @@ pub(crate) fn root_after_factor(d: &Poly, v: u32) -> Option<Poly> {
 }
 
 /// 単項式の中の w·inv(w) を 1 に約す（f・inv の引数の中も再帰的に）。式の変形の候補を作るだけで、正しさは検証核で示す
+/// 一般の分母 D（変数 1 つの式。f(x) − x など）について、t = inv(D) を含む式を D·t = 1 で簡約する。
+/// D の主項 c·m（f を含む項を優先し、なければ次数の最も高い項）について、m·t を (1 − (D − c·m)·t)/c に
+/// 書き換えることを、書き換えられなくなるまで繰り返す。f の引数の中も先に簡約する。
+/// 書き換えの差はつねに (D·t − 1) の倍数なので、検証核の逆数の公理から合同性・一次結合で正当化できる。
+/// 決められた回数で終わらなければ None。
+pub(crate) fn reduce_inv(p: &Poly, d: &Poly) -> Option<Poly> {
+    let t = Atom::Inv(std::rc::Rc::new(d.clone()));
+    let deg = |m: &Mono| m.factors().iter().map(|(_, e)| *e).sum::<u32>();
+    let has_f = |m: &Mono| m.factors().iter().any(|(a, _)| matches!(a, Atom::F(_)));
+    let ts = d.terms();
+    let (m, c) = ts
+        .iter()
+        .filter(|(m, _)| has_f(m))
+        .max_by_key(|(m, _)| deg(m))
+        .or_else(|| ts.iter().max_by_key(|(m, _)| deg(m)))
+        .cloned()?;
+    if m.factors().is_empty() {
+        return None;
+    }
+    let rest = d.sub(&Poly::mono(m.clone(), c.clone()));
+    let mt = Poly::mono(m, Q::one()).mul(&Poly::from_atom(t.clone()));
+    let mt = mt.terms().first()?.0.clone();
+    let one_rest = Poly::one().sub(&rest.mul(&Poly::from_atom(t.clone())));
+    // f の引数の中を先に簡約する
+    let mut cur = Poly::zero();
+    for (mono, coef) in p.terms() {
+        let mut q = Poly::constant(coef.clone());
+        for (a, e) in mono.factors() {
+            let a2 = match a {
+                Atom::F(u) => Atom::F(std::rc::Rc::new(reduce_inv(u, d)?)),
+                Atom::Inv(u) if **u != *d && Poly::from_atom(a.clone()).has_inv() && u.has_inv() => return None,
+                o => o.clone(),
+            };
+            q = q.mul(&Poly::from_atom(a2).pow(*e));
+        }
+        cur = cur.add(&q);
+    }
+    for _ in 0..64 {
+        let mut changed = false;
+        let mut out = Poly::zero();
+        for (mono, coef) in cur.terms() {
+            match mono.div(&mt) {
+                Some(q) => {
+                    out = out.add(&Poly::mono(q, coef / &c).mul(&one_rest));
+                    changed = true;
+                }
+                None => out = out.add(&Poly::mono(mono.clone(), coef.clone())),
+            }
+        }
+        cur = out;
+        if !changed {
+            return Some(cur);
+        }
+    }
+    None
+}
+
 pub(crate) fn cancel_inv(p: &Poly, w: u32) -> Poly {
     let wa = Atom::Var(w);
     let iwa = Atom::Inv(std::rc::Rc::new(Poly::var(w)));

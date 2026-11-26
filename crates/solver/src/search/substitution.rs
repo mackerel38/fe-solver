@@ -225,14 +225,15 @@ impl Searcher {
                 }
                 self.try_instance(st, g, s, 2)?;
             }
-            // 分数の代入（v := (v − r)/(c·w) など）
-            if round >= 1 {
-                for (v, sv) in self.inverse_substs(&p) {
-                    if self.closed(st) || !st.units.contains(&g) {
-                        break;
-                    }
-                    self.inverse_instance(st, g, v, sv)?;
+            // 分数の代入（v := (v − r)/(c·w) など）。分母が一般の式のもの（条件つきの事実を 1 つ作るだけ）は第 0 ラウンドから
+            for (v, sv, den) in self.inverse_substs(&p) {
+                if self.closed(st) || !st.units.contains(&g) {
+                    break;
                 }
+                if round == 0 && den == Poly::var(1 - v) {
+                    continue;
+                }
+                self.inverse_instance(st, g, v, sv, den)?;
             }
         }
         // 1 変数の事実の自己代入
@@ -321,7 +322,9 @@ impl Searcher {
 
     /// 分数の代入の候補: f の引数 u が変数 v について 1 次で係数が c·w（w は他方の変数、c は 0 でない有理数）なら、
     /// v := (v − r)/(c·w)（u を v にする）と v := −r/(c·w)（u を 0 にする）。2 つの引数の差についても同様（引数を等しくする）。
-    pub(crate) fn inverse_substs(&self, p: &Poly) -> Vec<(u32, Poly)> {
+    /// 係数が他方の変数の一般の式 a(w)（f(x) − x など）の場合も、a(w) ≠ 0 の点についての代入 v := (v − r)/a(w)、
+    /// v := −r/a(w) を候補にする（分母 a(w) を返す。結論は「a(w) = 0 ∨ …」の形になる）。
+    pub(crate) fn inverse_substs(&self, p: &Poly) -> Vec<(u32, Poly, Poly)> {
         let mut atoms: Vec<Poly> = Vec::new();
         for a in p.top_atoms() {
             if let Atom::F(u) = &a {
@@ -336,7 +339,8 @@ impl Searcher {
                 diffs.push((atoms[i].sub(&atoms[j]), false));
             }
         }
-        let mut out: Vec<(u32, Poly)> = Vec::new();
+        let mut out: Vec<(u32, Poly, Poly)> = Vec::new();
+        let mut gen: Vec<(u32, Poly, Poly)> = Vec::new();
         for (u, single) in diffs {
             for v in 0..2u32 {
                 let w = 1 - v;
@@ -349,28 +353,35 @@ impl Searcher {
                     continue;
                 }
                 let a = &cs[&1];
-                // 係数が c·w の形
-                let c = match a.terms() {
-                    [(m, c)] if m.factors() == [(Atom::Var(w), 1)] => c.clone(),
+                let r = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
+                if r.has_inv() {
+                    continue;
+                }
+                // 係数が c·w の形（分母は変数 w）か、w の一般の式（分母はその式）
+                let (iw, den, list) = match a.terms() {
+                    [(m, c)] if m.factors() == [(Atom::Var(w), 1)] => (Poly::inv(Poly::var(w)).scale(&(Q::one() / c)), Poly::var(w), &mut out),
+                    _ if a.as_const().is_none() && a.vars() == [w].into_iter().collect() && !a.has_inv() && poly_size(a) <= 20 => {
+                        (Poly::inv(a.clone()), a.clone(), &mut gen)
+                    }
                     _ => continue,
                 };
-                let r = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
-                let iw = Poly::inv(Poly::var(w)).scale(&(Q::one() / &c));
                 if single {
                     let s1 = Poly::var(v).sub(&r).mul(&iw);
-                    if !out.contains(&(v, s1.clone())) {
-                        out.push((v, s1));
+                    if !list.iter().any(|(v2, s2, _)| *v2 == v && *s2 == s1) {
+                        list.push((v, s1, den.clone()));
                     }
                 }
                 if !r.is_zero() {
                     let s0 = r.neg().mul(&iw);
-                    if !out.contains(&(v, s0.clone())) {
-                        out.push((v, s0));
+                    if !list.iter().any(|(v2, s2, _)| *v2 == v && *s2 == s0) {
+                        list.push((v, s0, den.clone()));
                     }
                 }
             }
         }
         out.truncate(self.scaled(6));
+        gen.truncate(self.scaled(4));
+        out.extend(gen);
         out
     }
 
@@ -433,25 +444,35 @@ impl Searcher {
     ///  (A) 逆数の公理「w = 0 ∨ w·inv(w) = 1」と合同性・一次結合で「w = 0 ∨ E' = 0」
     ///  (B) 排中律「w = 0 ∨ w ≠ 0」の w = 0 を代入した形と、E'(w = 0) の書き換えで「w ≠ 0 ∨ E' = 0」
     /// を作り、導出原理で「∀x,y. E' = 0」を得る。途中の形が扱えなければ何もしない（すべて検証核の規則で示す）。
-    pub(crate) fn inverse_instance(&mut self, st: &mut BState, g: Fact, v: u32, sv: Poly) -> Res<bool> {
+    ///
+    /// 分母 den が変数 w でない一般の式 D（f(x) − x など）のときは (A) だけを作り、条件つきの事実「D = 0 ∨ E' = 0」を加える。
+    pub(crate) fn inverse_instance(&mut self, st: &mut BState, g: Fact, v: u32, sv: Poly, den: Poly) -> Res<bool> {
         let key = format!("invsub|{:?}|{}|{}", g, v, sv);
         if !st.tried.insert(key) {
             return Ok(false);
         }
         let w = 1 - v;
         let b = st.b;
-        let wv = Poly::var(w);
+        let general = den != Poly::var(w);
+        let wv = den;
         let one_minus = wv.mul(&Poly::inv(wv.clone())).sub(&Poly::one());
+        let red = |q: &Poly| -> Option<Poly> {
+            if general {
+                reduce_inv(q, &wv)
+            } else {
+                Some(cancel_inv(q, w))
+            }
+        };
         let mut sb = vec![x(), y()];
         sb[v as usize] = sv;
         let p = self.e.poly0(g).subst_vars(&sb);
-        let p1 = cancel_inv(&p, w);
+        let p1 = match red(&p) {
+            Some(q) => q,
+            None => return Ok(false),
+        };
         if p1.has_inv() || p1 == p || p1.is_zero() || poly_size(&p1) > self.e.size_cap {
             return Ok(false);
         }
-        let mut z = vec![x(), y()];
-        z[w as usize] = Poly::zero();
-        let p0 = p1.subst_vars(&z);
         self.bump("invsub_try");
         let inst = self.e.k.instantiate(b, g, sb, 2)?;
         let pi = self.e.poly0(inst);
@@ -469,7 +490,10 @@ impl Searcher {
         let mut cur = p.clone();
         for a in p.top_atoms() {
             if let Atom::F(u) = &a {
-                let u1 = cancel_inv(u, w);
+                let u1 = match red(u) {
+                    Some(q) => q,
+                    None => return Ok(false),
+                };
                 if u1 == **u {
                     continue;
                 }
@@ -496,6 +520,15 @@ impl Searcher {
             }
         }
         let ca = self.e.k.lincomb(b, 2, items)?;
+        if general {
+            self.bump("invsub_gen");
+            let ca = self.tidy_clause(st, ca)?;
+            self.e.add_fact(st, ca)?;
+            return Ok(true);
+        }
+        let mut z = vec![x(), y()];
+        z[w as usize] = Poly::zero();
+        let p0 = p1.subst_vars(&z);
         // (B)
         let eo = self.e.k.eq_or_ne(b, 2, wv.clone())?;
         let (ie, ke) = match find_lit(self.e.clause(eo), &wv) {
@@ -530,6 +563,51 @@ impl Searcher {
         self.bump("invsub_ok");
         self.e.add_fact(st, r)?;
         Ok(true)
+    }
+
+    /// 条件つきの事実を整える: 1 つの変数しか使わない 2 変数の節は 1 変数にし（Instantiate）、
+    /// 等式リテラルの単項式の因子を零積の規則で分ける（f(x)² = 0 → f(x) = 0、x·f(x) = 0 → x = 0 ∨ f(x) = 0）。
+    pub(crate) fn tidy_clause(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
+        let b = st.b;
+        let mut cur = f;
+        let c = self.e.clause(cur).clone();
+        if c.nvars() == 2 {
+            let vs: BTreeSet<u32> = c.lits().iter().flat_map(|l| l.poly().vars()).collect();
+            if !vs.contains(&1) {
+                cur = self.e.k.instantiate(b, cur, vec![x(), Poly::zero()], 1)?;
+            } else if !vs.contains(&0) {
+                cur = self.e.k.instantiate(b, cur, vec![Poly::zero(), x()], 1)?;
+            }
+        }
+        for _ in 0..4 {
+            let c = self.e.clause(cur).clone();
+            let mut changed = false;
+            for (i, l) in c.lits().iter().enumerate() {
+                if l.rel() != Rel::Eq {
+                    continue;
+                }
+                let content = monomial_content(l.poly());
+                if content.is_one() {
+                    continue;
+                }
+                let mut fs: Vec<Poly> = Vec::new();
+                for (a, e) in content.factors() {
+                    for _ in 0..*e {
+                        fs.push(Poly::from_atom(a.clone()));
+                    }
+                }
+                fs.push(div_mono(l.poly(), &content));
+                if let Ok(z) = self.e.k.zero_product(b, cur, i, fs) {
+                    cur = z;
+                    changed = true;
+                    break;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        Ok(cur)
     }
 
     /// f の引数を打ち消す・単純にする代入（2 変数のまま）
