@@ -2,7 +2,7 @@
 """GitHub Pages 用の静的サイトを作る（問題の一覧と、問題ごとの結果・証明）。
 
 使い方: python3 scripts/build_site.py <集約した結果のディレクトリ> --out site
-入力: <dir>/results.jsonl, <dir>/proofs/FE-XXXX.txt, <dir>/summary.json, <dir>/tests.txt（任意）, data/problems.json
+入力: <dir>/results.jsonl, <dir>/proofs/FE-XXXX.txt, <dir>/summary.json, data/problems.json
 証明文はソルバ（fe_render）が検証核の導出記録から生成したものを、そのまま表示する（このスクリプトは書き換えない）。
 """
 import argparse
@@ -14,7 +14,7 @@ import re
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATUS_NAME = {"complete": "完全解決", "partial": "部分結果", "unresolved": "未解決", "crash": "異常終了",
                "killed": "強制終了", "skipped": "未実行"}
-SET_TAG = {"seen": "", "unseen": "初見", "challenge": "挑戦"}
+SET_TAG = {"seen": "", "unseen": "", "challenge": "挑戦"}
 
 CSS = """
 * { box-sizing: border-box; }
@@ -55,8 +55,6 @@ pre { background:#fff; border:1px solid #e2e2e2; border-radius:10px; padding:16p
 .pager { display:flex; justify-content:space-between; margin-top:28px; }
 .pager a, .src a { color:#3451a3; text-decoration:none; } .pager a:hover, .src a:hover { text-decoration:underline; }
 .src { color:#666; font-size:.9rem; margin-top:8px; }
-table { border-collapse:collapse; background:#fff; border-radius:10px; margin-bottom:24px; }
-td { padding:6px 14px; border-bottom:1px solid #ededed; } td:first-child { color:#666; }
 @media (max-width:640px) { .stats { grid-template-columns:repeat(2,1fr); } .list { grid-template-columns:1fr; } }
 """
 
@@ -97,8 +95,7 @@ def num(pid):
 
 def page(title, body, depth=0):
     up = "../" * depth
-    nav = (f'<nav><div><a class="brand" href="{up}index.html">FE Solver</a>'
-           f'<a href="{up}index.html">一覧</a><a href="{up}run.html">計測</a></div></nav>')
+    nav = f'<nav><div><a class="brand" href="{up}index.html">FE Solver</a></div></nav>'
     return (f'<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title>'
             f'<style>{CSS}</style></head><body>{nav}<main>{body}</main></body></html>')
@@ -164,7 +161,6 @@ def main():
         return f'<div class="stat {cls}"><strong>{value}</strong><span>{label}</span></div>'
 
     ev, ch = sets.get("evaluation(=seen+unseen)", {}), sets.get("challenge", {})
-    un = sets.get("unseen", {})
     stats = (stat(len(results), "全問題") + stat(done, "完全解決", "ok") +
              stat(f'{ev.get("complete", 0)}/{ev.get("total", 0)}', "評価セット", "ok") +
              stat(f'{ch.get("complete", 0)}/{ch.get("total", 0)}', "挑戦セット", "ng"))
@@ -174,7 +170,7 @@ def main():
 
     filters = ('<div class="filters">' + btn("st", "all", "すべて", True) + btn("st", "ok", "完全解決") +
                btn("st", "ng", "未完了") + '<span class="gap"></span>' + btn("set", "all", "すべて", True) +
-               btn("set", "seen", "既見") + btn("set", "unseen", "初見") + btn("set", "challenge", "挑戦") + "</div>")
+               btn("set", "eval", "評価セット") + btn("set", "challenge", "挑戦セット") + "</div>")
     cards = ""
     for pid in ids:
         r = results.get(pid)
@@ -183,26 +179,12 @@ def main():
         h, cls = head(pid, r)
         s = sols(r)
         sol_html = f'<div class="sol">{esc(s)}</div>' if s and r["status"] == "complete" else ""
-        cards += (f'<a class="card {cls}" href="p/{pid}.html" data-st="{cls}" data-set="{r["set"]}">{h}'
+        cards += (f'<a class="card {cls}" href="p/{pid}.html" data-st="{cls}" data-set="{"challenge" if r["set"] == "challenge" else "eval"}">{h}'
                   f'<div class="eq">{math(problems[pid]["equations"][0]["display"])}</div>{sol_html}</a>')
     body = f'<h1>FE Solver</h1><div class="stats">{stats}</div>{filters}<div class="list">{cards}</div>{FILTER_JS}'
     with open(os.path.join(args.out, "index.html"), "w", encoding="utf-8") as fp:
         fp.write(page("FE Solver", body))
 
-    # 計測（条件・セットごとの数・テストの出力）
-    meta = summary.get("meta", {})
-    rows = "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in meta.items())
-    for key, label in (("seen", "既見"), ("unseen", "初見"), ("challenge", "挑戦")):
-        if key in sets:
-            rows += f'<tr><td>{label}</td><td>{sets[key]["complete"]}/{sets[key]["total"]}</td></tr>'
-    t = summary.get("tests")
-    if t:
-        rows += (f'<tr><td>テスト</td><td>passed {t["passed"]}, failed {t["failed"]}'
-                 f'（負のテスト {t["negative"]["passed"]}/{t["negative"]["total"]}）</td></tr>')
-    tp = os.path.join(rd, "tests.txt")
-    out = f"<h3>テストの出力</h3><pre>{esc(open(tp, encoding='utf-8', errors='replace').read())}</pre>" if os.path.exists(tp) else ""
-    with open(os.path.join(args.out, "run.html"), "w", encoding="utf-8") as fp:
-        fp.write(page("計測 | FE Solver", f"<h1>計測</h1><table>{rows}</table>{out}"))
     print(f"サイトを {args.out} に作成（問題ページ {len(ids)}、完全解決 {done}）")
 
 
