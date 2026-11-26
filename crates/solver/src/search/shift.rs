@@ -12,6 +12,40 @@ use super::util::*;
 use super::{Fin, Searcher};
 
 impl Searcher {
+    /// 入れ替えの差: 2 変数の単位等式 p(x, y) = 0 から、x と y を入れ替えた例 p(y, x) = 0 との差
+    /// p(x, y) − p(y, x) = 0 を作る（一次結合）。右辺が対称なら f(A(x, y)) − f(A(y, x)) = 0 のような事実になる。
+    /// 入れ替えた例そのものは既知として加えないため、差は別に作る必要がある。項が減る（2 つの f の差など）ときだけ加える。
+    pub(crate) fn swap_differences(&mut self, st: &mut BState) -> Res<()> {
+        let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+        let mut n = 0;
+        for u in units {
+            if n >= self.scaled(8) || self.closed(st) {
+                return Ok(());
+            }
+            let key = format!("swapdiff|{:?}", u);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let p = self.e.poly0(u);
+            let ps = crate::engine::swap_xy(&p);
+            let d = p.sub(&ps);
+            if d.is_zero() || d.terms().len() >= p.terms().len() || !d.has_f() {
+                continue;
+            }
+            n += 1;
+            let b = st.b;
+            let us = self.e.k.instantiate(b, u, vec![y(), x()], 2)?;
+            let k = match scale_ratio(&self.e.poly0(us), &ps) {
+                Some(k) => k,
+                None => continue,
+            };
+            let r = self.e.k.lincomb(b, 2, vec![(Poly::one(), u, 0), (Poly::constant(-Q::one() / &k), us, 0)])?;
+            self.bump("swap_diff");
+            self.e.add_fact(st, r)?;
+        }
+        Ok(())
+    }
+
     /// この枝で加法性（f(x+y) = f(x) + f(y) − f(0)）が示されていて、加法的な族が解なら、葉を加法的な族で確定する。
     /// 族が A（定数なし）のときは、f(0) = 0 を書き換え規則で示して f(x+y) = f(x) + f(y) の形にする。
     /// 平行移動の事実「∀x,y. f(x + A(y)) − f(x) − B(y) = 0」（A, B は x を含まない）から、
@@ -253,8 +287,16 @@ impl Searcher {
             if let Added::New(nf) = self.e.add_fact(st, lem)? {
                 // 「… ∨ f(y) − f(x) ≠ 0」の形なら条件つきの単射性として覚える
                 let want = Lit::ne(Poly::f(y()).sub(&Poly::f(x())));
-                if self.e.clause(nf).nvars() == 2 && self.e.clause(nf).lits().contains(&want) && st.cinj.len() < 8 {
-                    st.cinj.push(nf);
+                let c = self.e.clause(nf).clone();
+                if c.nvars() == 2 && c.lits().contains(&want) {
+                    // ちょうど「y − x = 0 ∨ f(y) − f(x) ≠ 0」なら単射性そのもの（既存の単射性の適用に使う）
+                    let injl = Lit::eq(y().sub(&x()));
+                    if st.inj.is_none() && c.lits().len() == 2 && c.lits().contains(&injl) {
+                        st.inj = Some(nf);
+                        self.bump("inj_from_value");
+                    } else if st.cinj.len() < 8 {
+                        st.cinj.push(nf);
+                    }
                 }
             }
         }

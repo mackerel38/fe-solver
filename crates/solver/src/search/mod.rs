@@ -223,6 +223,10 @@ impl Searcher {
                 return Ok(());
             }
             if round >= 1 {
+                self.swap_differences(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
                 self.value_lemmas(st)?;
                 if self.closed(st) {
                     return Ok(());
