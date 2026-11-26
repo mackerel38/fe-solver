@@ -4,7 +4,8 @@
 最新のベンチマーク（bench/latest.json）で完全解決した問題を、ソルバで解き直して証明文を保存する。
 証明文はソルバ（fe_render）が検証核の導出記録から機械的に生成したもので、このスクリプトは書き換えない。
 
-使い方: python3 scripts/solved_report.py [--timeout 秒] [--run bench/runs/<日時>]
+使い方: python3 scripts/solved_report.py [--timeout 秒] [--run bench/runs/<日時> または集約結果のディレクトリ]
+結果のディレクトリに proofs/FE-XXXX.txt（bench.py --save-proofs や GitHub Actions の集約結果）があれば、解き直さずにそれを使う。
 出力:   reports/SOLVED.md（一覧）, reports/solved/FE-XXXX.md（問題ごとの証明）
 """
 import argparse
@@ -36,14 +37,22 @@ def main():
         latest = json.load(open(os.path.join(ROOT, "bench", "latest.json"), encoding="utf-8"))
         run_dir = os.path.join(ROOT, "bench", "runs", latest["run"])
     results = [json.loads(l) for l in open(os.path.join(run_dir, "results.jsonl"), encoding="utf-8")]
-    done = [r for r in results if r["status"] == "complete"]
+    done = [r for r in results if r["status"] in ("complete", "special") and r.get("set") in ("seen", "unseen")]
     problems = {p["id"]: p for p in json.load(open(os.path.join(ROOT, "data", "problems.json"), encoding="utf-8"))}
 
     out_dir = os.path.join(ROOT, "reports", "solved")
     os.makedirs(out_dir, exist_ok=True)
     texts = {}
+    pdir = os.path.join(run_dir, "proofs")
+    todo = []
+    for r in done:
+        pp = os.path.join(pdir, r["id"] + ".txt")
+        if os.path.exists(pp):
+            texts[r["id"]] = open(pp, encoding="utf-8").read()
+        else:
+            todo.append(r)
     with cf.ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futs = {ex.submit(solve, r["id"], args.timeout): r["id"] for r in done}
+        futs = {ex.submit(solve, r["id"], args.timeout): r["id"] for r in todo}
         for fu in cf.as_completed(futs):
             texts[futs[fu]] = fu.result()
 
@@ -51,7 +60,7 @@ def main():
     for r in sorted(done, key=lambda r: r["id"]):
         pid = r["id"]
         text = texts.get(pid, "")
-        ok = text.startswith("状態: 完全解決")
+        ok = text.startswith(("状態: 完全解決", "状態: 特殊解決"))
         eq = problems[pid]["equations"][0]["display"]
         sols = "、".join(r["families"]) if r["families"] else "（解なし）"
         with open(os.path.join(out_dir, pid + ".md"), "w", encoding="utf-8") as fp:
@@ -64,8 +73,8 @@ def main():
         rows.append((pid, SET_NAME.get(r["set"], r["set"]), eq, sols, ok))
 
     with open(os.path.join(ROOT, "reports", "SOLVED.md"), "w", encoding="utf-8") as fp:
-        fp.write("# 完全解決した問題の一覧\n\n")
-        fp.write(f"ベンチマーク `{os.path.relpath(run_dir, ROOT)}` で完全解決した {len(rows)} 問。"
+        fp.write("# 解決した問題の一覧（評価セット）\n\n")
+        fp.write(f"ベンチマーク `{os.path.relpath(run_dir, ROOT)}` で解決（完全解決・特殊解決）した {len(rows)} 問。"
                  "各問題の日本語の証明は `reports/solved/FE-XXXX.md`（ソルバが検証核の導出記録から生成したもの）。\n\n")
         counts = {}
         for row in rows:
