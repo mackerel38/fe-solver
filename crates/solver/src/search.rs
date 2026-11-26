@@ -323,7 +323,7 @@ impl Searcher {
             if round == 2 && depth <= 3 && st.inj.is_none() && self.try_zero_injectivity(st, depth)? {
                 return Ok(());
             }
-            if round >= 4 && depth <= 3 && self.reduce_depth == 0 && self.solution_rule(st).is_none() && self.try_reduction(st, depth)? {
+            if round >= 3 && depth <= 3 && self.reduce_depth == 0 && self.solution_rule(st).is_none() && self.try_reduction(st, depth)? {
                 return Ok(());
             }
             if st.zinj.is_some() {
@@ -495,7 +495,7 @@ impl Searcher {
         cands.sort_by_key(|u| poly_size(&self.e.poly0(*u)));
         let mut attempts = 0;
         for u in cands {
-            if attempts >= 1 {
+            if attempts >= 2 {
                 break;
             }
             let p = self.e.poly0(u);
@@ -508,7 +508,7 @@ impl Searcher {
             attempts += 1;
             let now = Instant::now();
             let remain = self.e.deadline.saturating_duration_since(now);
-            let budget = (remain / 6).min(Duration::from_secs(3));
+            let budget = (remain / 5).min(Duration::from_secs(5));
             if budget < Duration::from_millis(200) {
                 return Ok(false);
             }
