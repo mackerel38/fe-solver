@@ -156,7 +156,7 @@ def main():
              stat(f"{100 * done / total:.1f}%" if total else "—", "解決率", "ok"))
     filters = ('<div class="filters">'
                '<button data-k="st" data-v="all" class="on">すべて</button>'
-               '<button data-k="st" data-v="ok">完全解決</button><button data-k="st" data-v="ng">未完了</button>'
+               '<button data-k="st" data-v="ng">未完了</button><button data-k="st" data-v="ok">完全解決</button>'
                '<span class="gap"></span>'
                '<button data-k="site" data-v="all" class="on">All</button>'
                '<button data-k="site" data-v="open">Open</button><button data-k="site" data-v="solved">Solved</button>'
