@@ -58,3 +58,20 @@ fn tactic_fraction_substitution() {
     assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
     check_families(eq, &l, &r, &out);
 }
+
+/// 入れ替えの差と f の値で決まる量の補題: 右辺が x, y について対称な f(A(x, y)) = R(x, y) の型。
+/// P(x, y) − P(y, x) で f(A(x, y)) = f(A(y, x))、P(1, x) 型の事実 f(g(f(x))) = S(x) から単射性を導いて A(x, y) = A(y, x)
+#[test]
+fn tactic_swap_difference_and_value_injectivity() {
+    for (eq, want) in [
+        ("f(x*f(y) + 2*f(x*y)) = x*y + 2*f(x*y)", vec!["-1/3*x", "x"]),
+        ("f(2*x*f(y) + f(x*y)) = 2*x*y + f(x*y)", vec!["-2/3*x", "x"]),
+    ] {
+        let (l, r, out) = run(eq, 30);
+        assert_eq!(out.status, "complete", "{}", eq);
+        let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+        got.sort();
+        assert_eq!(got, want, "{}: 解の集合 {:?}", eq, got);
+        check_families(eq, &l, &r, &out);
+    }
+}
