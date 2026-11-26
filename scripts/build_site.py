@@ -82,7 +82,8 @@ def num(pid):
 
 def page(title, body, depth=0):
     up = "../" * depth
-    nav = f'<nav><div><a class="brand" href="{up}index.html">FE Solver</a></div></nav>'
+    nav = (f'<nav><div><a class="brand" href="{up}index.html">FE Solver</a>'
+           '<a href="https://gghx0.github.io/fe-project/">問題集</a></div></nav>')
     return (f'<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title>'
             f'<style>{CSS}</style></head><body>{nav}<main>{body}</main></body></html>')
