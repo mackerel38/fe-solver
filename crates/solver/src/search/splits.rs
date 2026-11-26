@@ -202,8 +202,7 @@ impl Searcher {
                 let a = Poly::cnst(consts[0]);
                 let inst = self.e.k.instantiate(c1, cf, vec![a.clone()], 0)?;
                 self.e.add_fact(&mut s1, inst)?;
-                let inst2 = self.e.k.instantiate(c1, cf, vec![a.neg()], 0)?;
-                self.e.add_fact(&mut s1, inst2)?;
+                // −a での例化は、代入を 1 回行った後に pointwise_instances が行う（先に場合分けが増えないように）
                 Ok(())
             })();
             match r {

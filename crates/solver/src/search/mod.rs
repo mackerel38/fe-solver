@@ -165,10 +165,6 @@ impl Searcher {
             if depth < 5 && self.solution_rule(st).is_none() && self.coef_split(st, depth)? {
                 return Ok(());
             }
-            self.pointwise_instances(st)?;
-            if self.closed(st) {
-                return Ok(());
-            }
             if st.inj.is_some() {
                 self.apply_injectivity(st)?;
                 if self.closed(st) {
@@ -192,6 +188,11 @@ impl Searcher {
             let r = self.instances(st, round);
             self.add_time("t_instances", t0);
             r?;
+            if self.closed(st) {
+                return Ok(());
+            }
+            // 各点の選言を閉じた点で例化する（閉じた選言は次のラウンドで場合分けされるので、先に代入を 1 回行う）
+            self.pointwise_instances(st)?;
             if self.closed(st) {
                 return Ok(());
             }

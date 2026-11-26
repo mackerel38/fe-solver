@@ -88,3 +88,23 @@ fn tactic_surjectivity_chain() {
     assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
     check_families(eq, &l, &r, &out);
 }
+
+/// 分母が一般の式の分数の代入: f の引数が一方の変数について 1 次で、係数が他方の変数の式 a(w)（f(y) + y、f(x) − x など）の型。
+/// a(w) ≠ 0 の点で v := (v − r)/a(w) として「a(w) = 0 ∨ …」を作り、変数を共有しない選言や各点の選言の場合分けにつなぐ
+#[test]
+fn tactic_general_denominator_fraction() {
+    for (eq, want) in [
+        ("f(x*f(y) + 2*x*y) = x*f(y) + 2*x*y", vec!["-2*x", "x"]),
+        ("f(2*x*f(y) + 2*x*y) = x*f(y) + x*y", vec!["-x", "1/2*x"]),
+        ("f(x^2 + 2*y*f(x)) = f(x)^2 + 2*f(x*y)", vec!["-1", "0", "x"]),
+    ] {
+        let (l, r, out) = run(eq, 60);
+        assert_eq!(out.status, "complete", "{}", eq);
+        let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+        got.sort();
+        let mut want: Vec<String> = want.into_iter().map(String::from).collect();
+        want.sort();
+        assert_eq!(got, want, "{}: 解の集合 {:?}", eq, got);
+        check_families(eq, &l, &r, &out);
+    }
+}
