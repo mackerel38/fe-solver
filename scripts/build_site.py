@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub Pages 用の静的サイトを作る（結果の一覧と問題ごとの証明）。
+"""GitHub Pages 用の静的サイトを作る（問題の一覧と、問題ごとの結果・証明）。
 
 使い方: python3 scripts/build_site.py <集約した結果のディレクトリ> --out site
 入力: <dir>/results.jsonl, <dir>/proofs/FE-XXXX.txt, <dir>/summary.json, <dir>/tests.txt（任意）, data/problems.json
@@ -9,65 +9,99 @@ import argparse
 import html
 import json
 import os
+import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SET_NAME = {"seen": "評価（既見）", "unseen": "評価（初見）", "challenge": "挑戦"}
 STATUS_NAME = {"complete": "完全解決", "partial": "部分結果", "unresolved": "未解決", "crash": "異常終了",
                "killed": "強制終了", "skipped": "未実行"}
+SET_TAG = {"seen": "", "unseen": "初見", "challenge": "挑戦"}
 
 CSS = """
-:root { color-scheme: light dark; --fg:#1d1f23; --muted:#5d6470; --bg:#fbfbfc; --card:#fff; --line:#e3e5e8;
-  --ok:#1f7a3a; --warn:#9a6700; --accent:#2457a6; }
-@media (prefers-color-scheme: dark) { :root { --fg:#e6e8eb; --muted:#a2a8b2; --bg:#15171a; --card:#1d2024;
-  --line:#30343a; --ok:#5cc27a; --warn:#d7a23a; --accent:#7aa7ef; } }
 * { box-sizing: border-box; }
-body { margin:0; font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-  color: var(--fg); background: var(--bg); line-height: 1.6; }
-main { max-width: 1040px; margin: 0 auto; padding: 28px 18px 60px; }
-a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
-h1 { font-size: 1.6rem; margin: 0 0 6px; } h2 { font-size: 1.2rem; margin: 32px 0 10px; }
-.muted { color: var(--muted); font-size: .92rem; }
-nav { display:flex; gap:16px; flex-wrap: wrap; margin: 10px 0 22px; font-size: .95rem; }
-.cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
-.card .num { font-size: 1.6rem; font-weight: 650; font-variant-numeric: tabular-nums; }
-.card .lbl { color: var(--muted); font-size: .88rem; }
-table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line);
-  border-radius: 10px; overflow: hidden; font-size: .93rem; }
-th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { font-weight: 600; color: var(--muted); font-size: .85rem; }
-tr:last-child td { border-bottom: none; }
-code, pre { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }
-pre { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
-  white-space: pre-wrap; word-break: break-word; font-size: .88rem; line-height: 1.55; }
-.ok { color: var(--ok); font-weight: 600; } .warn { color: var(--warn); }
-input[type=search] { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
-  background: var(--card); color: var(--fg); margin: 6px 0 12px; font-size: .95rem; }
+body { color:#111; background:#f5f5f5; margin:0; font-family: system-ui, sans-serif; line-height:1.5; }
+nav { background:#fff; border-bottom:1px solid #e5e5e5; }
+nav div { max-width:1000px; margin:0 auto; padding:14px 20px; display:flex; gap:20px; align-items:center; }
+nav a { color:#111; text-decoration:none; } nav a:hover { text-decoration:underline; }
+nav .brand { font-weight:700; margin-right:auto; }
+main { max-width:1000px; margin:0 auto; padding:28px 20px 60px; }
+h1 { margin:0 0 24px; }
+.stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:28px; }
+.stat { text-align:center; background:#fff; border-top:4px solid #222; border-radius:10px; padding:16px; }
+.stat strong { display:block; font-size:1.6rem; } .stat span { color:#666; font-size:.9rem; }
+.stat.ok { border-top-color:#2e7d32; } .stat.ng { border-top-color:#c62828; }
+.filters { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+.filters button { font:inherit; font-size:.95rem; background:#fff; color:#111; border:1px solid #c8c8c8;
+  border-radius:8px; padding:6px 14px; cursor:pointer; }
+.filters button.on { background:#222; color:#fff; border-color:#222; }
+.filters .gap { width:12px; }
+.list { display:grid; grid-template-columns:repeat(auto-fit,minmax(450px,1fr)); gap:16px; }
+.card { display:block; color:inherit; text-decoration:none; border-left:6px solid; border-radius:10px; padding:18px 20px;
+  transition: background .15s; }
+.card.ok { background:#f0f9f1; border-left-color:#2e7d32; } .card.ok:hover { background:#e6f5e8; }
+.card.ng { background:#fff1f1; border-left-color:#c62828; } .card.ng:hover { background:#ffe8e8; }
+.card[hidden] { display:none; }
+.head { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.head h2 { margin:0; font-size:1.25rem; }
+.status { font-weight:600; } .ok .status { color:#2e7d32; } .ng .status { color:#c62828; }
+.tag { color:#666; font-weight:400; font-size:.85rem; margin-right:8px; }
+.eq { font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", Georgia, serif; font-size:1.15rem;
+  margin:12px 0 4px; overflow-x:auto; white-space:nowrap; }
+.sol { color:#444; font-size:.92rem; }
+.problem .eq { font-size:1.4rem; margin:20px 0; }
+.problem .sol { font-size:1rem; }
+h3 { margin:32px 0 10px; font-size:1.1rem; }
+pre { background:#fff; border:1px solid #e2e2e2; border-radius:10px; padding:16px; white-space:pre-wrap;
+  word-break:break-word; font-size:.88rem; line-height:1.55; margin:0; }
+.pager { display:flex; justify-content:space-between; margin-top:28px; }
+.pager a, .src a { color:#3451a3; text-decoration:none; } .pager a:hover, .src a:hover { text-decoration:underline; }
+.src { color:#666; font-size:.9rem; margin-top:8px; }
+table { border-collapse:collapse; background:#fff; border-radius:10px; margin-bottom:24px; }
+td { padding:6px 14px; border-bottom:1px solid #ededed; } td:first-child { color:#666; }
+@media (max-width:640px) { .stats { grid-template-columns:repeat(2,1fr); } .list { grid-template-columns:1fr; } }
 """
 
 FILTER_JS = """
 <script>
-function filt(inp, tid) {
-  const q = inp.value.trim().toLowerCase();
-  for (const tr of document.querySelectorAll('#' + tid + ' tbody tr')) {
-    tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+const state = { st: 'all', set: 'all' };
+function apply() {
+  for (const c of document.querySelectorAll('.card')) {
+    const okSt = state.st === 'all' || c.dataset.st === state.st;
+    const okSet = state.set === 'all' || c.dataset.set === state.set;
+    c.hidden = !(okSt && okSet);
   }
+}
+for (const b of document.querySelectorAll('.filters button')) {
+  b.addEventListener('click', () => {
+    const k = b.dataset.k;
+    state[k] = b.dataset.v;
+    for (const o of document.querySelectorAll('.filters button[data-k="' + k + '"]')) o.classList.toggle('on', o === b);
+    apply();
+  });
 }
 </script>
 """
 
 
-def page(title, body, depth=0):
-    up = "../" * depth
-    nav = (f'<nav><a href="{up}index.html">概要</a><a href="{up}solved.html">完全解決した問題</a>'
-           f'<a href="{up}all.html">全問題</a><a href="{up}tests.html">テスト</a></nav>')
-    return (f'<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">'
-            f'<meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(title)}</title>'
-            f'<style>{CSS}</style></head><body><main>{nav}{body}</main>{FILTER_JS}</body></html>')
-
-
 def esc(s):
     return html.escape(str(s))
+
+
+def math(s):
+    """方程式の表示: x^2 を上付きにするだけ（文字列そのものは変えない）"""
+    return re.sub(r"\^(\d+)", r"<sup>\1</sup>", esc(s))
+
+
+def num(pid):
+    return int(pid.split("-")[1])
+
+
+def page(title, body, depth=0):
+    up = "../" * depth
+    nav = (f'<nav><div><a class="brand" href="{up}index.html">FE Solver</a>'
+           f'<a href="{up}index.html">一覧</a><a href="{up}run.html">計測</a></div></nav>')
+    return (f'<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title>'
+            f'<style>{CSS}</style></head><body>{nav}<main>{body}</main></body></html>')
 
 
 def main():
@@ -82,104 +116,94 @@ def main():
         results[r["id"]] = r
     summary = json.load(open(os.path.join(rd, "summary.json"), encoding="utf-8"))
     problems = {p["id"]: p for p in json.load(open(os.path.join(ROOT, "data", "problems.json"), encoding="utf-8"))}
+    ids = sorted(problems, key=num)
     os.makedirs(os.path.join(args.out, "p"), exist_ok=True)
 
     def sols(r):
-        return "、".join(r.get("families") or []) if r["status"] == "complete" else "、".join(r.get("found") or [])
+        if not r:
+            return ""
+        return "、".join((r.get("families") if r["status"] == "complete" else r.get("found")) or [])
+
+    def head(pid, r, tag_level="h2"):
+        ok = r and r["status"] == "complete"
+        st = STATUS_NAME.get(r["status"], r["status"]) if r else "未計測"
+        tag = SET_TAG.get(r["set"], "") if r else ""
+        tag_html = f'<span class="tag">{tag}</span>' if tag else ""
+        return (f'<div class="head"><{tag_level}>#{num(pid)}</{tag_level}>'
+                f'<span>{tag_html}<span class="status">{st}</span></span></div>'), ("ok" if ok else "ng")
 
     # 問題ごとのページ
-    for pid, p in problems.items():
-        r = results.get(pid)
-        eqs = "<br>".join(f"<code>{esc(e['display'])}</code>" for e in p["equations"])
-        refs = " ".join(f'<a href="{esc(x["url"])}">{esc(x.get("label", "link"))}</a>' for x in p.get("references", []))
-        site_link = f'https://gghx0.github.io/fe-project/fe/{pid[3:]}'
-        rows = [("方程式", eqs), ("セット", esc(SET_NAME.get(r["set"], r["set"]) if r else "（未計測）")),
-                ("サイト上の状態", f'{esc(p["status"])}（<a href="{site_link}">問題ページ</a>）'),
-                ("出典", refs or "—")]
-        body = f"<h1>{esc(pid)}</h1>"
-        if r:
-            st = STATUS_NAME.get(r["status"], r["status"])
-            cls = "ok" if r["status"] == "complete" else "warn"
-            rows.append(("結果", f'<span class="{cls}">{esc(st)}</span>（{r.get("time_ms", 0) / 1000:.1f} 秒）'))
-            if r["status"] == "complete":
-                rows.append(("解の集合", esc(sols(r)) or "（解なし）"))
-            else:
-                rows.append(("見つけた解", esc(sols(r)) or "—"))
-                rows.append(("止まった理由", esc("; ".join(r.get("reasons", [])))))
-        body += "<table>" + "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows) + "</table>"
+    for k, pid in enumerate(ids):
+        p, r = problems[pid], results.get(pid)
+        h, cls = head(pid, r, "h1")
+        eqs = "".join(f'<div class="eq">{math(e["display"])}</div>' for e in p["equations"][:1])
+        body = f'<div class="problem {cls}">{h}{eqs}'
+        s = sols(r)
+        if r and r["status"] == "complete":
+            body += f'<div class="sol">解: {esc(s) if s else "なし"}</div>'
+        elif s:
+            body += f'<div class="sol">見つけた解: {esc(s)}</div>'
+        body += (f'<div class="src"><a href="https://gghx0.github.io/fe-project/fe/{num(pid):04d}">問題集 #{num(pid)}</a>'
+                 + "".join(f' · <a href="{esc(x["url"])}">{esc(x.get("label", "出典"))}</a>' for x in p.get("references", []))
+                 + "</div></div>")
         proof_path = os.path.join(rd, "proofs", pid + ".txt")
         if os.path.exists(proof_path):
-            title = "証明" if r and r["status"] == "complete" else "報告（見つけた解と証明済みの事実）"
-            body += f"<h2>{title}</h2><pre>{esc(open(proof_path, encoding='utf-8').read().strip())}</pre>"
+            title = "証明" if r and r["status"] == "complete" else "途中経過"
+            body += f"<h3>{title}</h3><pre>{esc(open(proof_path, encoding='utf-8').read().strip())}</pre>"
+        prev_l = f'<a href="{ids[k - 1]}.html">← #{num(ids[k - 1])}</a>' if k > 0 else "<span></span>"
+        next_l = f'<a href="{ids[k + 1]}.html">#{num(ids[k + 1])} →</a>' if k + 1 < len(ids) else "<span></span>"
+        body += f'<div class="pager">{prev_l}{next_l}</div>'
         with open(os.path.join(args.out, "p", pid + ".html"), "w", encoding="utf-8") as fp:
-            fp.write(page(f"{pid} | 関数方程式ソルバ", body, depth=1))
+            fp.write(page(f"#{num(pid)} | FE Solver", body, depth=1))
 
-    # 概要
+    # 一覧
     sets = summary["sets"]
-    meta = summary.get("meta", {})
-    def card(key, label):
-        s = sets.get(key)
-        if not s:
-            return ""
-        return f'<div class="card"><div class="num">{s["complete"]} / {s["total"]}</div><div class="lbl">{label} 完全解決</div></div>'
-    cards = (card("evaluation(=seen+unseen)", "評価セット全体") + card("seen", "評価（既見）") +
-             card("unseen", "評価（初見）") + card("challenge", "挑戦セット（サイトで未解決）"))
-    t = summary.get("tests")
-    tests_html = ("（未実行）" if not t else
-                  f'<span class="{"ok" if t["ok"] else "warn"}">{"成功" if t["ok"] else "失敗"}</span>: '
-                  f'passed {t["passed"]}, failed {t["failed"]}、負のテスト {t["negative"]["passed"]}/{t["negative"]["total"]} 成功')
-    meta_html = "、".join(f"{esc(k)}: {esc(v)}" for k, v in meta.items())
-    body = ("<h1>R→R 関数方程式ソルバ: 結果と証明</h1>"
-            '<p class="muted">問題集 <a href="https://gghx0.github.io/fe-project/">FE Project</a> の全 847 問を解いた結果。'
-            "証明はソルバが検証核の導出記録から機械的に生成した日本語の証明文で、誤った事実を作れない構成（小さな検証核の推論規則だけが"
-            "事実を作る）になっている。</p>"
-            f'<p class="muted">{meta_html}</p><div class="cards">{cards}</div>'
-            f"<h2>テスト</h2><p>{tests_html}（<a href=\"tests.html\">出力</a>）</p>")
-    ch = sorted((r for r in results.values() if r["set"] == "challenge" and r["status"] == "complete"), key=lambda r: r["id"])
-    if ch:
-        body += "<h2>挑戦セット（サイトで未解決）で完全解決した問題</h2><table><thead><tr><th>ID</th><th>方程式</th><th>解の集合</th></tr></thead><tbody>"
-        for r in ch:
-            body += (f'<tr><td><a href="p/{r["id"]}.html">{r["id"]}</a></td>'
-                     f'<td><code>{esc(problems[r["id"]]["equations"][0]["display"])}</code></td><td>{esc(sols(r))}</td></tr>')
-        body += "</tbody></table>"
-    with open(os.path.join(args.out, "index.html"), "w", encoding="utf-8") as fp:
-        fp.write(page("関数方程式ソルバ: 結果と証明", body))
+    done = sum(1 for r in results.values() if r["status"] == "complete")
 
-    # 完全解決した問題
-    def table(rows, tid):
-        h = (f'<input type="search" placeholder="絞り込み（ID・方程式・解）" oninput="filt(this, \'{tid}\')">'
-             f'<table id="{tid}"><thead><tr><th>ID</th><th>セット</th><th>方程式</th><th>解</th></tr></thead><tbody>')
-        for r in rows:
-            h += (f'<tr><td><a href="p/{r["id"]}.html">{r["id"]}</a></td><td>{esc(SET_NAME.get(r["set"], r["set"]))}</td>'
-                  f'<td><code>{esc(problems[r["id"]]["equations"][0]["display"])}</code></td><td>{esc(sols(r))}</td></tr>')
-        return h + "</tbody></table>"
-    done = sorted((r for r in results.values() if r["status"] == "complete"), key=lambda r: r["id"])
-    body = f"<h1>完全解決した問題（{len(done)} 問）</h1>" + table(done, "solved")
-    with open(os.path.join(args.out, "solved.html"), "w", encoding="utf-8") as fp:
-        fp.write(page("完全解決した問題", body))
+    def stat(value, label, cls=""):
+        return f'<div class="stat {cls}"><strong>{value}</strong><span>{label}</span></div>'
 
-    # 全問題
-    body = "<h1>全問題</h1><input type=\"search\" placeholder=\"絞り込み（ID・方程式・状態）\" oninput=\"filt(this, 'all')\">"
-    body += '<table id="all"><thead><tr><th>ID</th><th>セット</th><th>方程式</th><th>結果</th><th>解 / 見つけた解</th></tr></thead><tbody>'
-    for pid in sorted(problems):
+    ev, ch = sets.get("evaluation(=seen+unseen)", {}), sets.get("challenge", {})
+    un = sets.get("unseen", {})
+    stats = (stat(len(results), "全問題") + stat(done, "完全解決", "ok") +
+             stat(f'{ev.get("complete", 0)}/{ev.get("total", 0)}', "評価セット", "ok") +
+             stat(f'{ch.get("complete", 0)}/{ch.get("total", 0)}', "挑戦セット", "ng"))
+
+    def btn(k, v, label, on=False):
+        return f'<button data-k="{k}" data-v="{v}"{" class=on" if on else ""}>{label}</button>'
+
+    filters = ('<div class="filters">' + btn("st", "all", "すべて", True) + btn("st", "ok", "完全解決") +
+               btn("st", "ng", "未完了") + '<span class="gap"></span>' + btn("set", "all", "すべて", True) +
+               btn("set", "seen", "既見") + btn("set", "unseen", "初見") + btn("set", "challenge", "挑戦") + "</div>")
+    cards = ""
+    for pid in ids:
         r = results.get(pid)
         if not r:
             continue
-        st = STATUS_NAME.get(r["status"], r["status"])
-        cls = "ok" if r["status"] == "complete" else ""
-        body += (f'<tr><td><a href="p/{pid}.html">{pid}</a></td><td>{esc(SET_NAME.get(r["set"], r["set"]))}</td>'
-                 f'<td><code>{esc(problems[pid]["equations"][0]["display"])}</code></td>'
-                 f'<td class="{cls}">{esc(st)}</td><td>{esc(sols(r))}</td></tr>')
-    body += "</tbody></table>"
-    with open(os.path.join(args.out, "all.html"), "w", encoding="utf-8") as fp:
-        fp.write(page("全問題", body))
+        h, cls = head(pid, r)
+        s = sols(r)
+        sol_html = f'<div class="sol">{esc(s)}</div>' if s and r["status"] == "complete" else ""
+        cards += (f'<a class="card {cls}" href="p/{pid}.html" data-st="{cls}" data-set="{r["set"]}">{h}'
+                  f'<div class="eq">{math(problems[pid]["equations"][0]["display"])}</div>{sol_html}</a>')
+    body = f'<h1>FE Solver</h1><div class="stats">{stats}</div>{filters}<div class="list">{cards}</div>{FILTER_JS}'
+    with open(os.path.join(args.out, "index.html"), "w", encoding="utf-8") as fp:
+        fp.write(page("FE Solver", body))
 
-    # テスト
+    # 計測（条件・セットごとの数・テストの出力）
+    meta = summary.get("meta", {})
+    rows = "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in meta.items())
+    for key, label in (("seen", "既見"), ("unseen", "初見"), ("challenge", "挑戦")):
+        if key in sets:
+            rows += f'<tr><td>{label}</td><td>{sets[key]["complete"]}/{sets[key]["total"]}</td></tr>'
+    t = summary.get("tests")
+    if t:
+        rows += (f'<tr><td>テスト</td><td>passed {t["passed"]}, failed {t["failed"]}'
+                 f'（負のテスト {t["negative"]["passed"]}/{t["negative"]["total"]}）</td></tr>')
     tp = os.path.join(rd, "tests.txt")
-    tbody = f"<pre>{esc(open(tp, encoding='utf-8', errors='replace').read())}</pre>" if os.path.exists(tp) else "<p>（未実行）</p>"
-    with open(os.path.join(args.out, "tests.html"), "w", encoding="utf-8") as fp:
-        fp.write(page("テスト", "<h1>テストの出力</h1>" + tbody))
-    print(f"サイトを {args.out} に作成（問題ページ {len(problems)}、完全解決 {len(done)}）")
+    out = f"<h3>テストの出力</h3><pre>{esc(open(tp, encoding='utf-8', errors='replace').read())}</pre>" if os.path.exists(tp) else ""
+    with open(os.path.join(args.out, "run.html"), "w", encoding="utf-8") as fp:
+        fp.write(page("計測 | FE Solver", f"<h1>計測</h1><table>{rows}</table>{out}"))
+    print(f"サイトを {args.out} に作成（問題ページ {len(ids)}、完全解決 {done}）")
 
 
 if __name__ == "__main__":
