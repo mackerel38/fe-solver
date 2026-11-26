@@ -301,6 +301,9 @@ impl Searcher {
             if round == 2 && depth <= 4 && self.identity_split(st, depth)? {
                 return Ok(());
             }
+            if round == 2 && depth <= 4 && self.negid_split(st, depth)? {
+                return Ok(());
+            }
             if round == 2 && depth <= 4 && std::env::var("FE_NO_INJ").is_err() && self.try_injectivity(st, depth)? {
                 return Ok(());
             }
@@ -694,6 +697,31 @@ impl Searcher {
 
     /// 恒等関数の候補による場合分け: 「∀x. f(x) = x」か「ある a で f(a) ≠ a」か（排中律）。
     /// 後者では点 a と f(a) − a ≠ 0（逆数）を代入・約分に使う。
+    /// f(x) = −x が解なら「∀x. f(x) = −x」か「ある b で f(b) ≠ −b」かで場合を分ける（排中律）。
+    /// 後者では点 b を代入に使える（解答の「f(a) ≠ −a となる a をとる」に当たる）
+    fn negid_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        if st.tried.contains("nid_split") || self.solution_rule(st).is_some() {
+            return Ok(false);
+        }
+        st.tried.insert("nid_split".into());
+        if self.e.k.verify_solution(&x().neg()).is_err() {
+            return Ok(false);
+        }
+        let c = fe_kernel::Clause::new(1, vec![Lit::eq(Poly::f(x()).add(&x()))]).map_err(|e| e.to_string())?;
+        let (c0, h0, c1, hs, _consts) = self.e.k.split_em(st.b, c)?;
+        self.bump("nid_split");
+        for (bb, hh) in [(c0, h0), (c1, hs[0])] {
+            let mut sc = st.child(bb);
+            sc.tried.insert("nid_split".into());
+            match self.e.add_fact(&mut sc, hh) {
+                Ok(_) => self.solve_branch(sc, depth + 1)?,
+                Err(m) if m == TIMEOUT => self.open.push((bb, TIMEOUT.into())),
+                Err(m) => return Err(m),
+            }
+        }
+        Ok(true)
+    }
+
     fn identity_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
         if st.tried.contains("id_split") || self.solution_rule(st).is_some() {
             return Ok(false);
