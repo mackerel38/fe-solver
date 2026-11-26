@@ -201,7 +201,7 @@ pub fn report(out: &SolveOutput) -> String {
         }
         _ => {
             s.push_str(match out.status {
-                "special_exist" => "状態: 特殊解決（病的な解の存在）\n",
+                "special_exist" => "状態: 特殊解決\n",
                 "partial" => "状態: 部分結果\n",
                 _ => "状態: 未解決\n",
             });
@@ -210,7 +210,7 @@ pub fn report(out: &SolveOutput) -> String {
                 s.push_str(&fe_render::render_additive_exist(k, fam));
             }
             if !out.found.is_empty() || !out.pw_found.is_empty() {
-                s.push_str("見つけた解（検証核で代入を確認済み）:\n");
+                s.push_str("見つけた解:\n");
                 for f in &out.found {
                     s.push_str(&format!("  {}\n", fe_render::fmt_family(f)));
                 }
@@ -218,11 +218,27 @@ pub fn report(out: &SolveOutput) -> String {
                     s.push_str(&format!("  {}\n", fe_render::fmt_pw(f)));
                 }
             }
+            // 止まった理由（内部の枝番号は外し、同じ理由はまとめる）
             s.push_str("止まった理由:\n");
+            let mut why: Vec<(String, usize)> = Vec::new();
             for r in &out.reasons {
-                s.push_str(&format!("  {}\n", r));
+                let t = match r.split_once(": ") {
+                    Some((head, rest)) if head.starts_with('枝') => rest.to_string(),
+                    _ => r.clone(),
+                };
+                match why.iter_mut().find(|(w, _)| *w == t) {
+                    Some((_, n)) => *n += 1,
+                    None => why.push((t, 1)),
+                }
             }
-            s.push_str("証明済みの事実（根の枝。導出つき）:\n");
+            for (w, n) in why {
+                if n > 1 {
+                    s.push_str(&format!("  {}（{} つの場合）\n", w, n));
+                } else {
+                    s.push_str(&format!("  {}\n", w));
+                }
+            }
+            s.push_str("証明済みの事実:\n");
             s.push_str(&fe_render::render_facts(k, &out.root_facts));
         }
     }

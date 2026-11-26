@@ -461,12 +461,12 @@ impl<'a> Ctx<'a> {
             Rule::InvAxiom { poly } => format!("{} ≠ 0 ならば逆数 1/({}) が存在するので", fmt_poly(poly, &n), fmt_poly(poly, &n)),
             Rule::Weaken { premise, .. } => format!("{} より特に", self.lbl(*premise)),
             Rule::CauchyBounded { additive, bound } => format!(
-                "{} より g(x) = f(x) − f(0) は加法的、{} より g は x ≥ 0 で片側に有界なので（コーシーの方程式）",
+                "{} より g(x) = f(x) − f(0) は加法的、{} より g は x ≥ 0 で片側に有界なので",
                 self.lbl(*additive),
                 self.lbl(*bound)
             ),
             Rule::ImportLemma { premise, lemma } => format!(
-                "{} は方程式 {} であり、補題として解くと（下の【補題】）解は次に限るので",
+                "{} は方程式 {} であり、下の【補題】より、解は次に限るので",
                 self.lbl(*premise),
                 fmt_equation(lemma)
             ),
@@ -653,13 +653,13 @@ fn additive_sides(k: &Kernel, fam: &fe_kernel::AddFamily) -> (String, String) {
 fn additive_check(k: &Kernel, fam: &fe_kernel::AddFamily) -> String {
     let (l, r) = additive_sides(k, fam);
     let (rule, example) = match fam.kind() {
-        fe_kernel::AddKind::Free => ("", "ハメル基底を使って作れる"),
+        fe_kernel::AddKind::Free => ("", "ハメル基底を使う"),
         fe_kernel::AddKind::Involution => ("、A(A(t)) = t", "ハメル基底を 2 つに分け、一方で t ↦ t、他方で t ↦ −t とする"),
         fe_kernel::AddKind::Projection => ("、A(A(t)) = A(t)", "ハメル基底を 2 つに分け、一方で t ↦ t、他方で t ↦ 0 とする"),
     };
     format!(
         "{} を代入し、A(有理数係数の和) = 有理数係数の A の和{} で展開すると 左辺 = {}、右辺 = {} で一致する。\n\
-         このような A には ax の形でないもの（{}）も存在するので、これらは病的な解である。",
+         {}と ax の形でない A も作れるので、これらには病的な解が含まれる。",
         fmt_add_family(fam),
         rule,
         l,
@@ -787,7 +787,7 @@ fn render_branch(ctx: &mut Ctx, b: BranchId, need: &BTreeSet<Fact>, depth: usize
     }
     let children = r.children().to_vec();
     if children.is_empty() {
-        let _ = writeln!(ctx.out, "{}（この場合は未解決）", indent);
+        let _ = writeln!(ctx.out, "{}この場合は未解決。", indent);
         return;
     }
     let n = Names::plain();
@@ -862,7 +862,7 @@ pub fn render(k: &Kernel, concl: &Conclusion) -> String {
         for fam in &concl.pw_families {
             let _ = writeln!(
                 ctx.out,
-                "{} は、x, y の符号と各 f の引数の範囲で場合を分けて代入すると、どの場合も両辺が一致する（検証核で確認）。",
+                "{} は、x, y の符号と各 f の引数の範囲で場合を分けて代入すると、どの場合も両辺が一致する。",
                 fmt_pw(fam)
             );
         }
