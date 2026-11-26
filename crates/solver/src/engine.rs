@@ -799,6 +799,8 @@ impl Engine {
                 st.others.push(o2);
                 if c.nvars() == 0 && c.lits().len() == 1 && c.lits()[0].rel() == Rel::Ne {
                     st.nes.push(o2);
+                    // 書き換えで新しい閉じた u ≠ 0 になった（f(b) − b ≠ 0 と f(b) = 0 から b ≠ 0 など）: 逆数も登録する
+                    self.make_inverse(st, o2)?;
                 }
                 if let Some(cr) = self.extract_cond_rule(o2) {
                     st.cond_rules.push(cr);
