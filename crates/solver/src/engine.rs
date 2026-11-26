@@ -659,10 +659,16 @@ impl Engine {
         Some(out)
     }
 
-    /// 事前計算で、代入例が自明・既知・大きすぎるとわかるなら true（このとき検証核は呼ばない）
-    pub fn predict_useless(&self, st: &BState, p: &Poly) -> bool {
-        let mut memo = HashMap::new();
-        let q = match self.dry_poly(st, p, &mut memo, 0) {
+    /// 事前計算で、代入例が自明・既知・大きすぎるとわかるなら true（このとき検証核は呼ばない）。
+    /// deep = false はキャッシュ済みの原子だけで判定（従来）、true は証明を作らない書き換えで判定する。
+    pub fn predict_useless(&self, st: &BState, p: &Poly, deep: bool) -> bool {
+        let q = if deep {
+            let mut memo = HashMap::new();
+            self.dry_poly(st, p, &mut memo, 0)
+        } else {
+            self.dry_normal(st, p)
+        };
+        let q = match q {
             Some(q) => q,
             None => return false,
         };

@@ -728,8 +728,15 @@ impl Searcher {
                 self.bump("inst_dup");
                 return Ok(false);
             }
-            if self.e.predict_useless(st, &ps) {
+            if self.e.predict_useless(st, &ps, false) {
                 self.bump("inst_skipped");
+                return Ok(false);
+            }
+            // 証明を作らない書き換えで自明・既知とわかるものは検証核に渡さない。ただし探索の順序を変えないよう、
+            // 処理した代入例として予算は消費する
+            if self.e.predict_useless(st, &ps, true) {
+                self.bump("inst_skipped_deep");
+                self.round_budget = self.round_budget.saturating_sub(1);
                 return Ok(false);
             }
         }
