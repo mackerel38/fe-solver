@@ -30,7 +30,7 @@ pub struct SolveOutput {
 
 /// 探索の予定: (幅, 時間の割合) の列。各試行は新しい検証核で独立に行い、完全解決した時点で終える。
 pub fn default_schedule() -> Vec<(f64, f64)> {
-    match std::env::var("FE_SCHEDULE") {
+    match std::env::var("FE_SCHEDULE").ok().filter(|s| !s.trim().is_empty()).ok_or(()) {
         Ok(s) => s
             .split(',')
             .filter_map(|t| {

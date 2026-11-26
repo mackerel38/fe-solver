@@ -25,6 +25,10 @@ on:
         description: "探索幅の上限（空なら既定の 16）"
         required: false
         default: ""
+      schedule:
+        description: "探索幅と時間の割合の予定（例 0.5:0.25,1:0.35,2:1。空なら既定）"
+        required: false
+        default: ""
       publish:
         description: "結果をサイトに公開する（main からの実行だけ公開できる。実験では false）"
         required: false
@@ -83,6 +87,7 @@ jobs:
       - name: Benchmark (shard ${{ matrix.shard }}/20)
         env:
           FE_MAX_WIDTH: ${{ inputs.max_width }}
+          FE_SCHEDULE: ${{ inputs.schedule }}
         run: >
           python3 scripts/bench.py --no-build --no-tests --save-proofs
           --sets "${{ inputs.sets }}"
