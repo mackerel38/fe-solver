@@ -4,7 +4,10 @@
 手法を加えたり変えたりしたら、この一覧を更新する。各手法には「効く方程式の類」と「対応するテスト」を書く。
 
 - 検証核: `crates/kernel`（事実を作れるのはここの規則だけ）
-- 探索: `crates/solver/src/search.rs`（どの規則をどの順で呼ぶかを決める）、`engine.rs`（証明つきの書き換え）
+- 探索: `crates/solver/src/search/`（どの規則をどの順で呼ぶかを決める）、`engine.rs`（証明つきの書き換え）。
+  手法ごとのファイル: `mod.rs`（探索の流れ）、`substitution.rs`（3.1 代入）、`elimination.rs`（3.2 消去・因数分解）、
+  `splits.rs`（3.3 場合分け）、`lemmas.rs`（単射性・零点の補題）、`properties.rs`（3.4 性質・既知の型）、
+  `reduction.rs`（3.5 帰着）、`finalize.rs`（3.6 解の形の確定）、`util.rs`（共通の補助関数）
 - テスト: 規則ごと `crates/kernel/tests/rules.rs`、負のテスト `crates/solver/tests/negative.rs`、
   手法の汎用性（データベース外の方程式）`crates/solver/tests/tactics.rs`
 
