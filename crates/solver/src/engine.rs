@@ -59,6 +59,8 @@ pub struct BState {
     pub cache: HashMap<Atom, Option<(Poly, Fact)>>,
     /// 枝で既に試した代入の記録
     pub tried: HashSet<String>,
+    /// 代入した直後（正規化前）の式。同じ式になる代入例は 2 回目以降を省く
+    pub inst_polys: HashSet<Poly>,
 }
 
 impl BState {
@@ -79,6 +81,7 @@ impl BState {
             keys: HashSet::new(),
             cache: HashMap::new(),
             tried: HashSet::new(),
+            inst_polys: HashSet::new(),
         }
     }
     /// 子の枝用の複製（キャッシュは引き継がない）
@@ -569,9 +572,97 @@ impl Engine {
         Some(out)
     }
 
+    /// 証明を作らない正規化（予測用）。norm_atom・rw_poly と同じ規則を同じ順で使う。
+    /// 条件付き規則・加法性の展開が使われうる原子があれば None（予測しない）。
+    /// 予測は代入例を省くかどうかの判断にだけ使い、事実は作らない（誤っても健全性には影響しない）。
+    pub fn dry_poly(&self, st: &BState, p: &Poly, memo: &mut HashMap<Atom, Poly>, depth: u32) -> Option<Poly> {
+        let mut out = Poly::zero();
+        for (m, c) in p.terms() {
+            let mut t = Poly::constant(c.clone());
+            for (a, e) in m.factors() {
+                let r = match a {
+                    Atom::Var(_) => Poly::from_atom(a.clone()),
+                    _ => self.dry_atom(st, a, memo, depth)?,
+                };
+                t = t.mul(&r.pow(*e));
+            }
+            out = out.add(&t);
+        }
+        for _ in 0..8 {
+            let mut changed = false;
+            for (_, pm, rhs) in &st.pow_rules {
+                let (o2, q) = reduce_mono(&out, pm, rhs);
+                if !q.is_zero() {
+                    out = o2;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        Some(out)
+    }
+
+    fn dry_atom(&self, st: &BState, a: &Atom, memo: &mut HashMap<Atom, Poly>, depth: u32) -> Option<Poly> {
+        if let Some(c) = st.cache.get(a) {
+            return Some(match c {
+                Some((r, _)) => r.clone(),
+                None => Poly::from_atom(a.clone()),
+            });
+        }
+        if let Some(r) = memo.get(a) {
+            return Some(r.clone());
+        }
+        if depth > 40 {
+            return None;
+        }
+        let mut cur_atom = a.clone();
+        if let Atom::F(u) = a {
+            let u2 = self.dry_poly(st, u, memo, depth + 1)?;
+            cur_atom = Atom::F(std::rc::Rc::new(u2));
+        }
+        let mut res: Option<Poly> = None;
+        for r in &st.rules {
+            if !cur_atom.has_var() && r.nvars == 1 && matches!(&r.lhs, Atom::F(p) if **p == Poly::var(0)) {
+                let mut is_param = false;
+                r.rhs.visit_atoms(&mut |b| {
+                    if *b == cur_atom {
+                        is_param = true;
+                    }
+                });
+                if is_param {
+                    continue;
+                }
+            }
+            if let Some(sb) = match_atom(&r.lhs, r.nvars, &cur_atom) {
+                let rhs = r.rhs.subst_vars(&sb);
+                if all_atoms_less(&rhs, &cur_atom) {
+                    res = Some(self.dry_poly(st, &rhs, memo, depth + 1)?);
+                    break;
+                }
+            }
+        }
+        let out = match res {
+            Some(r) => r,
+            None => {
+                if st.cond_rules.iter().any(|cr| match_atom(&cr.lhs, cr.nvars, &cur_atom).is_some()) {
+                    return None;
+                }
+                if st.additive.is_some() && matches!(cur_atom, Atom::F(_)) {
+                    return None;
+                }
+                Poly::from_atom(cur_atom)
+            }
+        };
+        memo.insert(a.clone(), out.clone());
+        Some(out)
+    }
+
     /// 事前計算で、代入例が自明・既知・大きすぎるとわかるなら true（このとき検証核は呼ばない）
     pub fn predict_useless(&self, st: &BState, p: &Poly) -> bool {
-        let q = match self.dry_normal(st, p) {
+        let mut memo = HashMap::new();
+        let q = match self.dry_poly(st, p, &mut memo, 0) {
             Some(q) => q,
             None => return false,
         };
