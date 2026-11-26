@@ -814,7 +814,7 @@ impl Searcher {
         // 生成元: 2 変数の単位等式（小さい順）
         let mut gens: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
         gens.sort_by_key(|f| poly_size(&self.e.poly0(*f)));
-        gens.truncate(self.scaled(if round == 0 { 2 } else { 4 + round }));
+        gens.truncate(self.scaled(if round == 0 { 3 } else { 6 + round }));
         let t1: Vec<Poly> = vec![Poly::zero(), Poly::one(), Poly::int(-1), x(), x().neg()];
         let fx = Poly::f(x());
         let half = Poly::constant(fe_kernel::poly::qf(1, 2));
