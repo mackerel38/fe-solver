@@ -1,0 +1,60 @@
+name: publish
+
+# benchmark の実行結果（アーティファクト merged-results）から、結果と証明のサイトを作って GitHub Pages に公開する。
+# benchmark の最後に自動で呼ばれる。計測をやり直さずに公開だけやり直すときは手動で起動する
+# （Actions タブ → publish → Run workflow、run_id は benchmark の実行の URL の runs/<ID>）。
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "公開する benchmark の実行 ID"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      run_id:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: merged-results
+          path: merged
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Build site
+        run: python3 scripts/build_site.py merged --out site
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+          name: github-pages-${{ github.run_attempt }}
+
+  # アップロード直後はアーティファクトの一覧に反映されないことがあるので、デプロイは別のジョブにする。
+  deploy:
+    needs: site
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}

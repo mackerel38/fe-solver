@@ -84,17 +84,10 @@ jobs:
           path: out
           retention-days: 7
 
-  publish:
+  merge:
     needs: [shard, tests]
     if: always()
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -111,16 +104,22 @@ jobs:
           python3 scripts/merge_results.py shards/* --out merged --tests tests/tests.txt
           --meta "計測=${{ github.run_id }}" "コミット=${{ github.sha }}"
           "時間制限=評価 ${{ inputs.eval_timeout }} 秒/問, 挑戦 ${{ inputs.challenge_timeout }} 秒/問"
-      - name: Build site
-        run: python3 scripts/build_site.py merged --out site
       - uses: actions/upload-artifact@v7
         with:
           name: merged-results
           path: merged
-          retention-days: 30
-      - uses: actions/configure-pages@v6
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-      - id: deploy
-        uses: actions/deploy-pages@v5
+          retention-days: 90
+          overwrite: true
+
+  # 結果と証明のサイトを作って GitHub Pages に公開する（publish.yml を呼ぶ）。
+  publish:
+    needs: merge
+    if: always() && needs.merge.result == 'success'
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/publish.yml
+    with:
+      run_id: ${{ github.run_id }}

@@ -59,6 +59,9 @@ python3 scripts/bench.py --ids FE-0001,FE-0004 --no-tests
   全問を 20 分割して並列に解き（`scripts/bench.py --shard K/20`）、結果を集約して（`scripts/merge_results.py`）、
   結果と問題ごとの証明のページを作り（`scripts/build_site.py`）、GitHub Pages に公開する。
   時間制限（評価・挑戦の 1 問あたり秒数）と解くセットは起動時に指定できる。集約した結果はアーティファクト `merged-results` にも残る。
+- `.github/workflows/publish.yml`（ワークフロー名 publish）: benchmark の集約結果（アーティファクト `merged-results`）から
+  サイトを作って GitHub Pages に公開する。benchmark の最後に自動で呼ばれる。計測をやり直さずに公開だけやり直すときは、
+  Actions タブ → publish → Run workflow で、benchmark の実行 ID（実行の URL の `runs/<ID>`）を指定する。
 - 初回の準備: リポジトリの Settings → Pages → Build and deployment の Source を「GitHub Actions」にする。
 - 生成物（`bench/runs/`, `reports/`, `site/` など）はリポジトリに入れない（`.gitignore`）。手元では従来どおり
   `python3 scripts/bench.py` などで作れる。
