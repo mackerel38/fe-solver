@@ -53,7 +53,10 @@ def run_one(pid, timeout, proof_dir=None, mem_mb=0):
         line = p.stdout.strip().splitlines()[-1] if p.stdout.strip() else ""
         if p.returncode != 0 or not line.startswith("{"):
             err = (p.stderr or "").strip().splitlines()
-            return {"id": pid, "status": "crash", "reasons": [err[-1] if err else f"exit {p.returncode}"],
+            # panic の場所と内容（"panicked at" の行とその次の行）を優先して残す
+            pan = [i for i, t in enumerate(err) if "panicked at" in t]
+            msg = " / ".join(err[pan[0]:pan[0] + 2]) if pan else (err[-1] if err else f"exit {p.returncode}")
+            return {"id": pid, "status": "crash", "reasons": [msg],
                     "time_ms": int(dt * 1000), "families": [], "found": []}
         r = json.loads(line)
         r["wall_ms"] = int(dt * 1000)
@@ -67,10 +70,14 @@ def run_one(pid, timeout, proof_dir=None, mem_mb=0):
                 "time_ms": int((time.time() - t0) * 1000), "families": [], "found": []}
 
 
+# 解の集合を決めた状態（完全解決と、加法的関数を含む族での特殊解決）
+SOLVED = ("complete", "special")
+
+
 def classify(r):
     """失敗理由の分類キー"""
-    if r["status"] == "complete":
-        return "complete"
+    if r["status"] in ("complete", "special", "special_exist"):
+        return r["status"]
     if r["status"] in ("crash", "killed", "skipped"):
         return r["status"]
     rs = r.get("reasons", [])
@@ -187,17 +194,19 @@ def main():
     # 集計
     sets = {}
     for pid, r in results.items():
-        s = sets.setdefault(r["set"], {"total": 0, "complete": 0, "partial": 0, "unresolved": 0, "crash": 0,
-                                       "killed": 0, "classes": {}})
+        s = sets.setdefault(r["set"], {"total": 0, "solved": 0, "complete": 0, "special": 0, "special_exist": 0,
+                                       "partial": 0, "unresolved": 0, "crash": 0, "killed": 0, "classes": {}})
         s["total"] += 1
         s[r["status"]] = s.get(r["status"], 0) + 1
+        if r["status"] in SOLVED:
+            s["solved"] += 1
         s["classes"][r["class"]] = s["classes"].get(r["class"], 0) + 1
     if "seen" in sets or "unseen" in sets:
-        ev = {"total": 0, "complete": 0}
+        ev = {"total": 0, "solved": 0, "complete": 0, "special": 0, "special_exist": 0}
         for k in ("seen", "unseen"):
             if k in sets:
-                ev["total"] += sets[k]["total"]
-                ev["complete"] += sets[k]["complete"]
+                for key in ev:
+                    ev[key] += sets[k][key]
         sets["evaluation(=seen+unseen)"] = ev
 
     # 前回との差分
@@ -205,9 +214,9 @@ def main():
     diff = {"gained": [], "lost": []}
     if os.path.exists(latest):
         prev = load(latest)
-        prev_complete = set(prev.get("complete_ids", []))
+        prev_complete = set(prev.get("solved_ids", prev.get("complete_ids", [])))
         prev_ids = set(prev.get("ids", []))
-        now_complete = {i for i, r in results.items() if r["status"] == "complete"}
+        now_complete = {i for i, r in results.items() if r["status"] in SOLVED}
         diff["gained"] = sorted(now_complete - prev_complete)
         diff["lost"] = sorted((prev_complete & set(results)) - now_complete)
         diff["previous_run"] = prev.get("run")
@@ -223,6 +232,7 @@ def main():
         "diff": diff,
         "tests": tests,
         "ids": sorted(results),
+        "solved_ids": sorted(i for i, r in results.items() if r["status"] in SOLVED),
         "complete_ids": sorted(i for i, r in results.items() if r["status"] == "complete"),
         "crash_ids": unsound,
     }
@@ -244,7 +254,8 @@ def main():
             if "classes" in s:
                 cl = ", ".join(f"{a}:{b}" for a, b in sorted(s["classes"].items(), key=lambda t: -t[1]))
                 extra = f"  [{cl}]"
-            print(f"  {names[k]}: 完全解決 {s['complete']}/{s['total']}{extra}")
+            print(f"  {names[k]}: 解決 {s['solved']}/{s['total']}（完全解決 {s['complete']}, 特殊解決 {s['special']}; "
+                  f"病的な解の存在のみ {s['special_exist']}）{extra}")
     if diff.get("previous_run"):
         print(f"  前回 ({diff['previous_run']}) との差分: +{len(diff['gained'])} {diff['gained'][:20]}  "
               f"-{len(diff['lost'])} {diff['lost'][:20]}")

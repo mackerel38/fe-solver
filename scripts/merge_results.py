@@ -48,16 +48,19 @@ def main():
             fp.write(json.dumps(results[pid], ensure_ascii=False) + "\n")
     sets = {}
     for r in results.values():
-        s = sets.setdefault(r["set"], {"total": 0, "complete": 0, "partial": 0, "unresolved": 0, "crash": 0,
-                                       "killed": 0, "skipped": 0, "classes": {}})
+        s = sets.setdefault(r["set"], {"total": 0, "solved": 0, "complete": 0, "special": 0, "special_exist": 0,
+                                       "partial": 0, "unresolved": 0, "crash": 0, "killed": 0, "skipped": 0,
+                                       "classes": {}})
         s["total"] += 1
         s[r["status"]] = s.get(r["status"], 0) + 1
+        if r["status"] in ("complete", "special"):
+            s["solved"] += 1
         s["classes"][r.get("class", "?")] = s["classes"].get(r.get("class", "?"), 0) + 1
-    ev = {"total": 0, "complete": 0}
+    ev = {"total": 0, "solved": 0, "complete": 0, "special": 0, "special_exist": 0}
     for k in ("seen", "unseen"):
         if k in sets:
-            ev["total"] += sets[k]["total"]
-            ev["complete"] += sets[k]["complete"]
+            for key in ev:
+                ev[key] += sets[k][key]
     sets["evaluation(=seen+unseen)"] = ev
     tests = None
     if args.tests and os.path.exists(args.tests):
@@ -66,6 +69,7 @@ def main():
         tests = parse_tests(text)
     meta = dict(kv.split("=", 1) for kv in args.meta)
     summary = {"sets": sets, "tests": tests, "meta": meta,
+               "solved_ids": sorted(i for i, r in results.items() if r["status"] in ("complete", "special")),
                "complete_ids": sorted(i for i, r in results.items() if r["status"] == "complete")}
     with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as fp:
         json.dump(summary, fp, ensure_ascii=False, indent=1)
@@ -73,7 +77,8 @@ def main():
     for k, name in (("evaluation(=seen+unseen)", "評価セット全体"), ("seen", NAMES["seen"]),
                     ("unseen", NAMES["unseen"]), ("challenge", NAMES["challenge"])):
         if k in sets:
-            print(f"  {name}: 完全解決 {sets[k]['complete']}/{sets[k]['total']}")
+            print(f"  {name}: 解決 {sets[k]['solved']}/{sets[k]['total']}（完全解決 {sets[k]['complete']}, "
+                  f"特殊解決 {sets[k]['special']}; 病的な解の存在のみ {sets[k]['special_exist']}）")
     if tests:
         print(f"  テスト: {'成功' if tests['ok'] else '失敗'} passed={tests['passed']} failed={tests['failed']} "
               f"負のテスト {tests['negative']['passed']}/{tests['negative']['total']} 成功")

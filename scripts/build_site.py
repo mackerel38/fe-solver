@@ -10,6 +10,7 @@ import html
 import json
 import os
 import re
+import shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -22,10 +23,10 @@ nav a { color:#111; text-decoration:none; } nav a:hover { text-decoration:underl
 nav .brand { font-weight:700; margin-right:auto; }
 main { max-width:1000px; margin:0 auto; padding:28px 20px 60px; }
 h1 { margin:0 0 24px; }
-.stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:28px; }
+.stats { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:28px; }
 .stat { text-align:center; background:#fff; border-top:4px solid #222; border-radius:10px; padding:16px; }
 .stat strong { display:block; font-size:1.6rem; } .stat span { color:#666; font-size:.9rem; }
-.stat.ok { border-top-color:#2e7d32; } .stat.ng { border-top-color:#c62828; }
+.stat.ok { border-top-color:#2e7d32; } .stat.ng { border-top-color:#c62828; } .stat.sp { border-top-color:#d99a00; }
 .filters { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
 .filters button { font:inherit; font-size:.95rem; background:#fff; color:#111; border:1px solid #c8c8c8;
   border-radius:8px; padding:6px 14px; cursor:pointer; }
@@ -36,10 +37,11 @@ h1 { margin:0 0 24px; }
   transition: background .15s; }
 .card.ok { background:#f0f9f1; border-left-color:#2e7d32; } .card.ok:hover { background:#e6f5e8; }
 .card.ng { background:#fff1f1; border-left-color:#c62828; } .card.ng:hover { background:#ffe8e8; }
+.card.sp { background:#fff8df; border-left-color:#d99a00; } .card.sp:hover { background:#fff1bd; }
 .card[hidden] { display:none; }
 .head { display:flex; justify-content:space-between; align-items:center; gap:12px; }
 .head h2 { margin:0; font-size:1.25rem; }
-.status { font-weight:600; } .ok .status { color:#2e7d32; } .ng .status { color:#c62828; }
+.status { font-weight:600; } .ok .status { color:#2e7d32; } .ng .status { color:#c62828; } .sp .status { color:#9a5b00; }
 .eq { font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", Georgia, serif; font-size:1.15rem;
   margin:12px 0 4px; overflow-x:auto; white-space:nowrap; }
 .sol { color:#444; font-size:.92rem; }
@@ -51,7 +53,7 @@ pre { background:#fff; border:1px solid #e2e2e2; border-radius:10px; padding:16p
 .pager { display:flex; justify-content:space-between; margin-top:28px; }
 .pager a, .src a { color:#3451a3; text-decoration:none; } .pager a:hover, .src a:hover { text-decoration:underline; }
 .src { color:#666; font-size:.9rem; margin-top:8px; }
-@media (max-width:640px) { .stats { grid-template-columns:repeat(2,1fr); } .list { grid-template-columns:1fr; } }
+@media (max-width:640px) { .stats { grid-template-columns:repeat(3,1fr); } .list { grid-template-columns:1fr; } }
 """
 
 FILTER_JS = """
@@ -107,17 +109,32 @@ def main():
     problems = {p["id"]: p for p in json.load(open(os.path.join(ROOT, "data", "problems.json"), encoding="utf-8"))}
     ids = sorted(problems, key=num)
     os.makedirs(os.path.join(args.out, "p"), exist_ok=True)
+    # 次の公開で「良い方を残す」ための生データ（scripts/merge_best.py が読む）
+    os.makedirs(os.path.join(args.out, "data", "proofs"), exist_ok=True)
+    shutil.copy(os.path.join(rd, "results.jsonl"), os.path.join(args.out, "data", "results.jsonl"))
+    pdir = os.path.join(rd, "proofs")
+    if os.path.isdir(pdir):
+        for name in os.listdir(pdir):
+            shutil.copy(os.path.join(pdir, name), os.path.join(args.out, "data", "proofs", name))
+
+    def kind(r):
+        """表示の分類: ok = 解決（完全解決）, sp = 特殊解決（加法的関数を含む族・病的な解の存在）, ng = 未解決"""
+        if r and r["status"] == "complete":
+            return "ok"
+        if r and r["status"] in ("special", "special_exist"):
+            return "sp"
+        return "ng"
 
     def sols(r):
         if not r:
             return ""
-        return "、".join((r.get("families") if r["status"] == "complete" else r.get("found")) or [])
+        return "、".join((r.get("families") if r["status"] in ("complete", "special") else r.get("found")) or [])
 
     def head(pid, r, tag_level="h2"):
-        ok = r and r["status"] == "complete"
-        st = ("解決" if ok else "未解決") if r else "未計測"
+        cls = kind(r)
+        st = {"ok": "解決", "sp": "特殊解決", "ng": "未解決"}[cls] if r else "未計測"
         return (f'<div class="head"><{tag_level}>#{num(pid)}</{tag_level}>'
-                f'<span class="status">{st}</span></div>'), ("ok" if ok else "ng")
+                f'<span class="status">{st}</span></div>'), cls
 
     # 問題ごとのページ
     for k, pid in enumerate(ids):
@@ -126,7 +143,7 @@ def main():
         eqs = "".join(f'<div class="eq">{math(e["display"])}</div>' for e in p["equations"][:1])
         body = f'<div class="problem {cls}">{h}{eqs}'
         s = sols(r)
-        if r and r["status"] == "complete":
+        if r and r["status"] in ("complete", "special"):
             body += f'<div class="sol">解: {esc(s) if s else "なし"}</div>'
         elif s:
             body += f'<div class="sol">見つけた解: {esc(s)}</div>'
@@ -135,7 +152,7 @@ def main():
                  + "</div></div>")
         proof_path = os.path.join(rd, "proofs", pid + ".txt")
         if os.path.exists(proof_path):
-            title = "証明" if r and r["status"] == "complete" else "途中経過"
+            title = "証明" if r and r["status"] in ("complete", "special") else "途中経過"
             body += f"<h3>{title}</h3><pre>{esc(open(proof_path, encoding='utf-8').read().strip())}</pre>"
         prev_l = f'<a href="{ids[k - 1]}.html">← #{num(ids[k - 1])}</a>' if k > 0 else "<span></span>"
         next_l = f'<a href="{ids[k + 1]}.html">#{num(ids[k + 1])} →</a>' if k + 1 < len(ids) else "<span></span>"
@@ -144,17 +161,20 @@ def main():
             fp.write(page(f"#{num(pid)} | FE Solver", body, depth=1))
 
     # 一覧
-    done = sum(1 for r in results.values() if r["status"] == "complete")
+    done = sum(1 for r in results.values() if kind(r) == "ok")
+    special = sum(1 for r in results.values() if kind(r) == "sp")
     total = len(results)
 
     def stat(value, label, cls=""):
         return f'<div class="stat {cls}"><strong>{value}</strong><span>{label}</span></div>'
 
-    stats = (stat(total, "全問題") + stat(done, "解決", "ok") + stat(total - done, "未解決", "ng") +
-             stat(f"{100 * done / total:.1f}%" if total else "—", "解決率", "ok"))
+    stats = (stat(total, "全問題") + stat(done, "解決", "ok") + stat(special, "特殊解決", "sp") +
+             stat(total - done - special, "未解決", "ng") +
+             stat(f"{100 * (done + special) / total:.1f}%" if total else "—", "解決率", "ok"))
     filters = ('<div class="filters">'
                '<button data-k="st" data-v="all" class="on">すべて</button>'
-               '<button data-k="st" data-v="ng">未解決</button><button data-k="st" data-v="ok">解決</button>'
+               '<button data-k="st" data-v="ng">未解決</button><button data-k="st" data-v="sp">特殊解決</button>'
+               '<button data-k="st" data-v="ok">解決</button>'
                '<span class="gap"></span>'
                '<button data-k="site" data-v="all" class="on">All</button>'
                '<button data-k="site" data-v="open">Open</button><button data-k="site" data-v="solved">Solved</button>'
@@ -166,14 +186,14 @@ def main():
             continue
         h, cls = head(pid, r)
         s = sols(r)
-        sol_html = f'<div class="sol">{esc(s)}</div>' if s and r["status"] == "complete" else ""
+        sol_html = f'<div class="sol">{esc(s)}</div>' if s and r["status"] in ("complete", "special") else ""
         cards += (f'<a class="card {cls}" href="p/{pid}.html" data-st="{cls}" data-site="{esc(problems[pid]["status"])}">{h}'
                   f'<div class="eq">{math(problems[pid]["equations"][0]["display"])}</div>{sol_html}</a>')
     body = f'<h1>FE Solver</h1><div class="stats">{stats}</div>{filters}<div class="list">{cards}</div>{FILTER_JS}'
     with open(os.path.join(args.out, "index.html"), "w", encoding="utf-8") as fp:
         fp.write(page("FE Solver", body))
 
-    print(f"サイトを {args.out} に作成（問題ページ {len(ids)}、完全解決 {done}）")
+    print(f"サイトを {args.out} に作成（問題ページ {len(ids)}、解決 {done}、特殊解決 {special}）")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 name: publish
 
 # benchmark の実行結果（アーティファクト merged-results）から、結果と証明のサイトを作って GitHub Pages に公開する。
+# 公開中のサイトの結果と問題ごとに比べて良い方を残す（一度解けた問題は、次の計測で解けなくても未解決に戻さない）。
+# reset を true にすると、公開中の結果は使わず、この計測の結果だけで作る。
 # benchmark の最後に自動で呼ばれる。計測をやり直さずに公開だけやり直すときは手動で起動する
 # （Actions タブ → publish → Run workflow、run_id は benchmark の実行の URL の runs/<ID>）。
 on:
@@ -10,11 +12,20 @@ on:
         description: "公開する benchmark の実行 ID"
         required: true
         type: string
+      reset:
+        description: "公開中の結果を使わず、この計測の結果だけで作る"
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       run_id:
         required: true
         type: string
+      reset:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,8 +44,15 @@ jobs:
           path: merged
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
+      - name: Keep the better of the new and published results
+        run: |
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          prev=""
+          if [ "${{ inputs.reset }}" != "true" ]; then prev="https://${owner,,}.github.io/${repo}/"; fi
+          python3 scripts/merge_best.py merged --out best --prev-url "$prev" --run "${{ inputs.run_id }}"
       - name: Build site
-        run: python3 scripts/build_site.py merged --out site
+        run: python3 scripts/build_site.py best --out site
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
