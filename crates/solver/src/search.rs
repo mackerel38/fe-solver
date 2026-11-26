@@ -929,6 +929,28 @@ impl Searcher {
                 }
             }
         }
+        // 対合の活用: f(f(x)) = x（または f(f(x)) = −x + c などの 1 次式）がわかっている枝では、
+        // 2 変数の単位等式すべてに P(f(x), y) と P(x, f(y)) を試す（f(f(·)) が書き換えで消えるため有効なことが多い）
+        if round >= 1 {
+            let ffx = Atom::F(std::rc::Rc::new(Poly::f(x())));
+            let invol = st.rules.iter().any(|r| r.nvars == 1 && r.lhs == ffx && !r.rhs.has_f());
+            if invol {
+                let mut all2: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+                all2.sort_by_key(|f| poly_size(&self.e.poly0(*f)));
+                all2.truncate(self.scaled(10));
+                for g in all2 {
+                    for sb in [vec![Poly::f(x()), y()], vec![x(), Poly::f(y())]] {
+                        if self.closed(st) {
+                            return Ok(());
+                        }
+                        if !st.units.contains(&g) {
+                            break;
+                        }
+                        self.try_instance(st, g, sb, 2)?;
+                    }
+                }
+            }
+        }
         // 1 変数の事実の自己代入
         if round >= 1 {
             let mut ones: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
