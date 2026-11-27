@@ -182,7 +182,8 @@ impl Searcher {
                 }
             }
             // 見つけた解に導かれる補題の推測（すべての解が満たす性質を、否定を閉じられれば補題にする）
-            if round == 2 && depth <= 2 && std::env::var("FE_NO_SPEC").is_err() {
+            // 探索の予定の最後の段階（幅 2 以上。前の段階で解けなかった問題）だけで行う
+            if round == 2 && depth <= 2 && self.width >= 2.0 && std::env::var("FE_NO_SPEC").is_err() {
                 if self.speculate_lemmas(st, depth, round)? {
                     return Ok(());
                 }
