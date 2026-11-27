@@ -71,11 +71,12 @@ impl Searcher {
         if st.tried.contains("zinj") || st.zinj.is_some() {
             return Ok(false);
         }
-        st.tried.insert("zinj".into());
-        // f ≡ 0 が解なら（この枝で f(j) ≠ 0 がわかっていない限り）成り立たないので試さない
+        // f ≡ 0 が解なら（この枝で f(j) ≠ 0 がわかっていない限り）成り立たないので試さない。
+        // このときは「試した」と記録しない（f(j) ≠ 0 を仮定した子の枝で試せるように）
         if self.e.k.verify_solution(&Poly::zero()).is_ok() && st.nes.is_empty() {
             return Ok(false);
         }
+        st.tried.insert("zinj".into());
         let c = fe_kernel::Clause::new(1, vec![Lit::ne(Poly::f(x())), Lit::eq(x())]).map_err(|e| e.to_string())?;
         let (c0, h0, c1, hs, _consts) = self.e.k.split_em(st.b, c)?;
         self.bump("zinj_try");
@@ -122,6 +123,20 @@ impl Searcher {
         Ok(true)
     }
 
+    /// f が変数を含む式 T の値で 0 になることを述べる事実（単位等式 c·f(T) = 0、または選言のリテラル f(T) = 0、
+    /// T は x と異なる変数を含む式）があるか。零点の補題（f(t) = 0 ⇒ t = 0）を場合分けより先に試す目安。
+    pub(crate) fn has_zero_image(&self, st: &BState) -> bool {
+        let is_zero_image = |p: &Poly| -> bool {
+            p.terms().len() == 1
+                && p.terms()[0].0.factors().len() == 1
+                && matches!(&p.terms()[0].0.factors()[0].0, Atom::F(s) if s.has_var() && **s != x())
+        };
+        st.units.iter().chain(st.others.iter()).any(|&u| {
+            let c = self.e.clause(u);
+            c.nvars() >= 1 && c.lits().iter().any(|l| l.rel() == Rel::Eq && is_zero_image(l.poly()))
+        })
+    }
+
     /// 零点の補題から: 単位等式 c·f(s) = 0 があれば s = 0
     pub(crate) fn apply_zero_injectivity(&mut self, st: &mut BState) -> Res<()> {
         let z = match st.zinj {
@@ -158,6 +173,50 @@ impl Searcher {
             self.e.add_fact(st, r)?;
             if self.closed(st) {
                 return Ok(());
+            }
+        }
+        // 選言のリテラル f(s) = 0 も s = 0 に置き換える（零点の補題の例「f(s) ≠ 0 ∨ s = 0」との導出原理を繰り返す）
+        let others: Vec<Fact> = st.others.iter().copied().filter(|&f| {
+            let c = self.e.clause(f);
+            c.nvars() >= 1 && c.lits().len() >= 2 && c.lits().len() <= 3
+        }).collect();
+        for o in others.into_iter().take(self.scaled(12)) {
+            let key = format!("zinjd|{:?}", o);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let mut cur = o;
+            for _ in 0..3 {
+                let c = self.e.clause(cur).clone();
+                let pos = c.lits().iter().position(|l| {
+                    l.rel() == Rel::Eq
+                        && l.poly().terms().len() == 1
+                        && l.poly().terms()[0].0.factors().len() == 1
+                        && l.poly().terms()[0].0.factors()[0].1 == 1
+                        && matches!(&l.poly().terms()[0].0.factors()[0].0, Atom::F(s1) if !s1.is_zero())
+                });
+                let li = match pos {
+                    Some(i) => i,
+                    None => break,
+                };
+                let s1 = match &c.lits()[li].poly().terms()[0].0.factors()[0].0 {
+                    Atom::F(s1) => (**s1).clone(),
+                    _ => break,
+                };
+                let inst = self.e.k.instantiate(st.b, z, vec![s1.clone()], c.nvars())?;
+                let want = Lit::ne(Poly::f(s1));
+                let zi = match self.e.clause(inst).lits().iter().position(|l| *l == want) {
+                    Some(i) => i,
+                    None => break,
+                };
+                cur = self.e.k.resolve(st.b, cur, li, inst, zi)?;
+            }
+            if cur != o {
+                self.bump("zinj_apply_disj");
+                self.e.add_fact(st, cur)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
             }
         }
         Ok(())
