@@ -486,6 +486,51 @@ fn piecewise_verification() {
     assert!(k.verify_piecewise(vec![q(0)], vec![f(x()), c(0), x()]).is_err());
 }
 
+/// 任意の区間をもつ族（病的な解の存在）: x ≥ 0 で f(x) = x、x < 0 で任意の値など
+#[test]
+fn arbitrary_family_verification() {
+    use fe_kernel::ArbPiece::{Choice, Fixed, Free, NonNeg, NonPos};
+    let x2 = || x().pow(2);
+    let y2 = || y().pow(2);
+    // f(x² + f(y²)) = x² + y²: 負の側は使われないので任意
+    let k = Kernel::new(f(x2().add(&f(y2()))), x2().add(&y2())).unwrap();
+    assert!(k.verify_arbitrary(vec![q(0)], vec![Free, c(0).into_fixed(), Fixed(x())]).is_ok());
+    // 正の側を任意にすると解でない
+    assert!(k.verify_arbitrary(vec![q(0)], vec![Fixed(x()), c(0).into_fixed(), Free]).is_err());
+    // f(f(x) + f(y)²) = f(x) + f(y)²: 負の側は 0 以上なら任意（引数がいつも 0 以上）、0 以下や任意では示せない
+    let k2 = Kernel::new(f(f(x()).add(&f(y()).pow(2))), f(x()).add(&f(y()).pow(2))).unwrap();
+    assert!(k2.verify_arbitrary(vec![q(0)], vec![NonNeg, c(0).into_fixed(), Fixed(x())]).is_ok());
+    assert!(k2.verify_arbitrary(vec![q(0)], vec![NonPos, c(0).into_fixed(), Fixed(x())]).is_err());
+    assert!(k2.verify_arbitrary(vec![q(0)], vec![Free, c(0).into_fixed(), Fixed(x())]).is_err());
+    // f(x f(x) + y f(y)) = x f(x) + y f(y): 負の側は 0 以下なら任意（t·f(t) ≥ 0）
+    let k3 = Kernel::new(f(x().mul(&f(x())).add(&y().mul(&f(y())))), x().mul(&f(x())).add(&y().mul(&f(y())))).unwrap();
+    assert!(k3.verify_arbitrary(vec![q(0)], vec![NonPos, c(0).into_fixed(), Fixed(x())]).is_ok());
+    assert!(k3.verify_arbitrary(vec![q(0)], vec![NonNeg, c(0).into_fixed(), Fixed(x())]).is_err());
+    // f(x² + f(y)²) = f(x)² + y²: 負の側は各点で x か −x（f(t)² = t²）。0 か x では解でない
+    let k4 = Kernel::new(f(x2().add(&f(y()).pow(2))), f(x()).pow(2).add(&y2())).unwrap();
+    assert!(k4.verify_arbitrary(vec![q(0)], vec![Choice(x(), x().neg()), c(0).into_fixed(), Fixed(x())]).is_ok());
+    assert!(k4.verify_arbitrary(vec![q(0)], vec![Choice(x(), c(0)), c(0).into_fixed(), Fixed(x())]).is_err());
+    // 加法性 f(x + y) = f(x) + f(y) では、どの区間を任意にしても解でない
+    let k5 = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    for pc in [Free, NonNeg, NonPos, Choice(x(), x().neg())] {
+        assert!(k5.verify_arbitrary(vec![q(0)], vec![pc.clone(), c(0).into_fixed(), Fixed(x())]).is_err());
+        assert!(k5.verify_arbitrary(vec![q(0)], vec![Fixed(x()), c(0).into_fixed(), pc]).is_err());
+    }
+    // 形式の誤り: 任意の区間がない、点の区間を任意にする、同じ式の選択
+    assert!(k.verify_arbitrary(vec![q(0)], vec![Fixed(x()), c(0).into_fixed(), Fixed(x())]).is_err());
+    assert!(k.verify_arbitrary(vec![q(0)], vec![Fixed(x()), Free, Free]).is_err());
+    assert!(k.verify_arbitrary(vec![q(0)], vec![Choice(x(), x()), c(0).into_fixed(), Fixed(x())]).is_err());
+}
+
+trait IntoFixed {
+    fn into_fixed(self) -> fe_kernel::ArbPiece;
+}
+impl IntoFixed for Poly {
+    fn into_fixed(self) -> fe_kernel::ArbPiece {
+        fe_kernel::ArbPiece::Fixed(self)
+    }
+}
+
 #[test]
 fn piecewise_marking() {
     let mut k = Kernel::new(f(x().mul(&y())), f(x()).mul(&f(y()))).unwrap();

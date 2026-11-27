@@ -1293,6 +1293,13 @@ impl Kernel {
         Ok(PwFamily { kernel: self.id, breaks, pieces })
     }
 
+    /// 任意の区間をもつ族（ある開区間で f が任意の値・0 以上 / 以下の任意の値・各点で 2 つの式の一方）が、
+    /// その区間でどの値を選んでも解であることを確かめる（詳細は piecewise モジュール）。病的な解の存在の証明に使う。
+    pub fn verify_arbitrary(&self, breaks: Vec<Q>, pieces: Vec<crate::piecewise::ArbPiece>) -> R<crate::piecewise::ArbFamily> {
+        crate::piecewise::verify_arbitrary(&self.lhs, &self.rhs, &breaks, &pieces)?;
+        Ok(crate::piecewise::ArbFamily { kernel: self.id, breaks, pieces })
+    }
+
     /// 葉 b で、区分的な族の各区間 i について事実 facts[i] が「その区間では f(x) = g_i(x)」を与えるなら、
     /// 葉を「解が確定」とする。facts[i] の節は、f を含む等式リテラル λ(f(t) − h) = 0（t = x、または点の区間では
     /// t = 区切り点）がちょうど 1 つで、他のリテラルは x の 1 次式でその区間全体で偽、h は区間上で g_i と一致すること。
