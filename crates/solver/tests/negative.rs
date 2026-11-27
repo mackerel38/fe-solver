@@ -73,6 +73,82 @@ fn add_family_contains(fam: &fe_kernel::AddFamily, a: &fe_kernel::Q, b: &fe_kern
     }
 }
 
+/// 任意の区間をもつ族の具体的な関数（任意の値は、引数と種から決まる擬似乱数で選ぶ）
+fn arb_member(fam: &fe_kernel::ArbFamily, seed: u64) -> impl Fn(&Q) -> Q + '_ {
+    use fe_kernel::ArbPiece;
+    use std::hash::{Hash, Hasher};
+    move |t: &Q| -> Q {
+        let br = fam.breaks();
+        // t の属する区間の番号
+        let mut idx = 2 * br.len();
+        for (k, b) in br.iter().enumerate() {
+            if t < b {
+                idx = 2 * k;
+                break;
+            }
+            if t == b {
+                idx = 2 * k + 1;
+                break;
+            }
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{}", t).hash(&mut h);
+        seed.hash(&mut h);
+        let r = h.finish();
+        let ev = |g: &Poly| eval_poly(g, t, &Q::zero(), &|_| Q::zero());
+        match &fam.pieces()[idx] {
+            ArbPiece::Fixed(g) => ev(g),
+            ArbPiece::Free => Q::from_integer(((r % 7) as i64 - 3).into()) / Q::from_integer(((r >> 8) % 3 + 1).into()),
+            ArbPiece::NonNeg => Q::from_integer(((r % 5) as i64).into()) / Q::from_integer(((r >> 8) % 3 + 1).into()),
+            ArbPiece::NonPos => -Q::from_integer(((r % 5) as i64).into()) / Q::from_integer(((r >> 8) % 3 + 1).into()),
+            ArbPiece::Choice(a, b) => {
+                if r % 2 == 0 {
+                    ev(a)
+                } else {
+                    ev(b)
+                }
+            }
+        }
+    }
+}
+
+/// 多項式を x, y の値と f の関数で厳密に評価する（検証核とは独立に、有理数で計算する）
+fn eval_poly(p: &Poly, xv: &Q, yv: &Q, f: &dyn Fn(&Q) -> Q) -> Q {
+    use fe_kernel::Atom;
+    let mut s = Q::zero();
+    for (m, c) in p.terms() {
+        let mut t = c.clone();
+        for (a, e) in m.factors() {
+            let v = match a {
+                Atom::Var(0) => xv.clone(),
+                Atom::Var(1) => yv.clone(),
+                Atom::F(u) => f(&eval_poly(u, xv, yv, f)),
+                other => panic!("評価できない原子 {:?}", other),
+            };
+            for _ in 0..*e {
+                t = t * v.clone();
+            }
+        }
+        s = s + t;
+    }
+    s
+}
+
+/// 任意の区間をもつ族が、具体的な関数（4 通りの値の選び方）で方程式を有理数の点で厳密に満たすこと（検証核とは独立の確認）
+fn check_arb_numerically(eq_desc: &str, l: &Poly, r: &Poly, fam: &fe_kernel::ArbFamily) {
+    let pts = [q(-3), q(-2), q(-1), qf(-1, 2), q(0), qf(1, 3), q(1), q(2), qf(5, 2)];
+    for seed in 0..4u64 {
+        let f = arb_member(fam, seed);
+        for a in &pts {
+            for b in &pts {
+                let lv = eval_poly(l, a, b, &f);
+                let rv = eval_poly(r, a, b, &f);
+                assert!(lv == rv, "{}: 任意の区間をもつ族の具体的な関数（種 {}）が x = {}, y = {} で方程式を満たさない", eq_desc, seed, a, b);
+            }
+        }
+    }
+}
+
 /// 報告した族がすべて（新しい検証核でも）解であること。
 /// 完全解決と主張したなら総当たりの解をすべて含み、しかも「任意の加法的関数が解」ではないこと
 /// （そうなら多項式で書けない病的な解があるので、多項式・区分的な族だけの完全解決は誤り）。
@@ -88,8 +164,16 @@ fn check_sound(eq_desc: &str, l: &Poly, r: &Poly, out: &SolveOutput) {
     for f in out.add_found.iter().chain(out.add_families.iter()) {
         assert!(fresh.verify_additive_kind(f.g(), f.kind()).is_ok(), "{}: 解でない加法的な族を報告した: {:?}", eq_desc, f.g());
     }
-    if out.status == "special" || out.status == "special_exist" {
+    for f in out.arb_found.iter() {
+        assert!(fresh.verify_arbitrary(f.breaks().to_vec(), f.pieces().to_vec()).is_ok(), "{}: 解でない任意の区間をもつ族を報告した", eq_desc);
+        check_arb_numerically(eq_desc, l, r, f);
+    }
+    if out.status == "special" {
         assert!(out.add_found.is_some(), "{}: 特殊解決なのに加法的な族の検証がない", eq_desc);
+    }
+    if out.status == "special_exist" {
+        // 病的な解の存在は、加法的な族か任意の区間をもつ族（上で新しい検証核と数値で確かめた）による
+        assert!(out.add_found.is_some() || out.arb_found.is_some(), "{}: 特殊解決なのに病的な解の族の検証がない", eq_desc);
     }
     if out.status == "special" {
         assert!(!out.add_families.is_empty(), "{}: 特殊解決なのに加法的な族の葉がない", eq_desc);
@@ -167,14 +251,28 @@ fn negative_pathological_equations_are_not_complete() {
 
 #[test]
 fn negative_special_only_when_additive_functions_are_solutions() {
-    // 加法的関数（条件なし・対合・射影）の族が解ではない方程式で特殊解決と主張しないこと
+    // 加法的関数（条件なし・対合・射影）の族が解ではない方程式で、加法的な族による特殊解決を主張しないこと。
+    // f(x²) = f(x)² と f(x)² = x² は「x ≥ 0 で x、x < 0 で各点ごとに ±x」という病的な解をもつので、病的な解の存在
+    // （special_exist）は、任意の区間をもつ族が新しい検証核と、検証核とは独立の数値の確認（check_sound）を通るときだけ認める。
     for eq in ["f(x*y) = f(x)*f(y)", "f(x^2) = f(x)^2", "f(x)^2 = x^2", "f(x*f(y)) = y*f(x)", "f(x + y) = f(x)*f(y)"] {
         let out = run(eq);
-        assert!(
-            out.status != "special" && out.status != "special_exist",
-            "{}: 任意の加法的関数が解ではないのに特殊解決と主張した",
-            eq
-        );
+        assert!(out.status != "special", "{}: 任意の加法的関数が解ではないのに加法的な族で解の集合を決めたと主張した", eq);
+        assert!(out.add_found.is_none(), "{}: 任意の加法的関数が解ではないのに加法的な族を報告した", eq);
+        if out.status == "special_exist" {
+            assert!(out.arb_found.is_some(), "{}: 病的な解の存在の根拠がない", eq);
+        }
+        let (l, r) = parse_general(eq).unwrap();
+        check_sound(eq, &l, &r, &out);
+    }
+}
+
+#[test]
+fn negative_arbitrary_family_examples_are_genuine() {
+    // 病的な解（各点ごとに ±x）をもつことが知られている方程式で、報告した任意の区間をもつ族を数値でも確かめる
+    for eq in ["f(x)^2 = x^2", "f(x^2) = f(x)^2", "f(x^2 + f(y^2)) = x^2 + y^2", "f(x^2 + y^2) = f(x)^2 + f(y)^2"] {
+        let out = run(eq);
+        assert_eq!(out.status, "special_exist", "{}", eq);
+        assert!(out.arb_found.is_some(), "{}", eq);
         let (l, r) = parse_general(eq).unwrap();
         check_sound(eq, &l, &r, &out);
     }
@@ -290,5 +388,26 @@ fn negative_known_solution_sets_exact() {
                 assert!(ok, "{}: 期待する解 {} がない（得た族: {:?}）", eq, wanted, got);
             }
         }
+    }
+}
+
+/// 任意の区間をもつ族（病的な解の存在）は、解が多項式・加法的な族だけの方程式や、壊した方程式では検証を通らない
+#[test]
+fn negative_no_arbitrary_family_for_rigid_equations() {
+    for eq in [
+        "f(x^2 + f(y)) = y + f(x)^2",
+        "f(x*f(y) + x) = x*y + f(x)",
+        "f(f(x) + y) = 2*x + f(f(y) - x)",
+        "f(x + f(y)) = f(x) + y",
+        "f(x + y) = f(x) + f(y)",
+        // 壊した方程式（f(x² + f(y²)) = x² + y² は負の側が任意だが、右辺を変えると成り立たない）
+        "f(x^2 + f(y^2)) = x^2 + 2*y^2",
+        "f(f(x) + f(y)^2) = f(x) + 2*f(y)^2",
+    ] {
+        let (l, r) = parse_general(eq).unwrap();
+        let k = Kernel::new(l.clone(), r.clone()).unwrap();
+        assert!(fe_solver::search::find_arb_candidates(&k).is_none(), "{}: 任意の区間をもつ族を解としてしまう", eq);
+        let out = solve(l, r, T).unwrap();
+        assert!(out.arb_found.is_none(), "{}: 任意の区間をもつ族を報告した", eq);
     }
 }

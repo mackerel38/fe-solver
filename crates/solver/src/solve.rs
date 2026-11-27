@@ -1,15 +1,16 @@
 //! 1 問を解く入口。結果は検証核の結論から作る。
 
 use crate::engine::Engine;
-use crate::search::{find_candidates, find_pw_candidates, Searcher};
-use fe_kernel::{AddFamily, Fact, Family, Kernel, Poly, PwFamily, Rel, ROOT};
+use crate::search::{find_arb_candidates, find_candidates, find_pw_candidates, Searcher};
+use fe_kernel::{AddFamily, ArbFamily, Fact, Family, Kernel, Poly, PwFamily, Rel, ROOT};
 use std::time::{Duration, Instant};
 
 pub struct SolveOutput {
     pub kernel: Kernel,
     /// complete: 解の集合を決定（多項式・区分的な族）
     /// special: 解の集合を決定（加法的関数を含む族があり、病的な解をもつ）
-    /// special_exist: 任意の加法的関数を含む族が解であることを示した（病的な解が存在する）が、解の集合は未確定
+    /// special_exist: 任意の加法的関数を含む族、または任意の区間をもつ族が解であることを示した（病的な解が存在する）が、
+    /// 解の集合は未確定
     /// partial: 解を見つけたが未確定 / unresolved: 解も見つからない
     pub status: &'static str,
     pub families: Vec<Family>,
@@ -20,6 +21,8 @@ pub struct SolveOutput {
     pub add_families: Vec<AddFamily>,
     /// 検証核で確かめた「任意の加法的関数を含む解の族」（根の方程式についての検証。special / special_exist）
     pub add_found: Option<AddFamily>,
+    /// 検証核で確かめた「任意の区間をもつ解の族」（ある開区間でどの値を選んでも解。special_exist）
+    pub arb_found: Option<ArbFamily>,
     pub reasons: Vec<String>,
     pub error: Option<String>,
     pub elapsed: Duration,
@@ -123,13 +126,19 @@ fn solve_once(lhs: Poly, rhs: Poly, timeout: Duration, width: f64) -> Result<Sol
         }
     }
     let add_found = s.additive_family();
+    let arb_found = find_arb_candidates(&s.e.k);
+    // 健全性の確認: 解の集合を決めた（complete / special）のに、任意の区間をもつ族（無数の、区分的な式で書けない解を含む）が
+    // 解なら矛盾。そのときは内部エラーとして報告する（起きてはならない）
+    if concl.complete && error.is_none() && arb_found.is_some() {
+        error = Some("健全性の警告: 解の集合を決めたが、任意の区間をもつ族も解である".into());
+    }
     let status = if concl.complete && error.is_none() {
         if concl.add_families.is_empty() {
             "complete"
         } else {
             "special"
         }
-    } else if add_found.is_some() {
+    } else if add_found.is_some() || arb_found.is_some() {
         "special_exist"
     } else if !found.is_empty() || !pw_found.is_empty() {
         "partial"
@@ -169,6 +178,7 @@ fn solve_once(lhs: Poly, rhs: Poly, timeout: Duration, width: f64) -> Result<Sol
         pw_found,
         add_families: concl.add_families.clone(),
         add_found,
+        arb_found,
         reasons,
         error,
         elapsed: start.elapsed(),
@@ -208,6 +218,8 @@ pub fn report(out: &SolveOutput) -> String {
             s.push_str(&format!("方程式: {}\n", fe_render::fmt_equation(k)));
             if let Some(fam) = &out.add_found {
                 s.push_str(&fe_render::render_additive_exist(k, fam));
+            } else if let Some(fam) = &out.arb_found {
+                s.push_str(&fe_render::render_arb_exist(k, fam));
             }
             if !out.found.is_empty() || !out.pw_found.is_empty() {
                 s.push_str("見つけた解:\n");

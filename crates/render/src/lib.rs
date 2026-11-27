@@ -740,6 +740,92 @@ pub fn render_additive_exist(k: &Kernel, fam: &fe_kernel::AddFamily) -> String {
     format!("【病的な解の存在】\n{}\nほかに解があるかどうかは示せていない。\n", additive_check(k, fam))
 }
 
+/// 任意の区間をもつ族の表示（例: 「f(x) = x（x ≥ 0）、x < 0 では 0 以上の任意の値」）
+pub fn fmt_arb(fam: &fe_kernel::ArbFamily) -> String {
+    use fe_kernel::ArbPiece;
+    let n = Names::plain();
+    let br = fam.breaks();
+    let pcs = fam.pieces();
+    let desc = |p: &ArbPiece| -> (bool, String) {
+        match p {
+            ArbPiece::Fixed(g) => (true, fmt_poly(g, &n)),
+            ArbPiece::Free => (false, "任意の値".into()),
+            ArbPiece::NonNeg => (false, "0 以上の任意の値".into()),
+            ArbPiece::NonPos => (false, "0 以下の任意の値".into()),
+            ArbPiece::Choice(a, b) => (false, format!("各点で {} か {} のどちらか（点ごとに任意に選ぶ）", fmt_poly(a, &n), fmt_poly(b, &n))),
+        }
+    };
+    let mut fixed: Vec<String> = Vec::new();
+    let mut free: Vec<String> = Vec::new();
+    // 区切り点の値が隣の固定の区間の式と一致するなら、その区間に含めて「x ≥ b」「x ≤ b」と書く
+    let mut merged: Vec<bool> = vec![false; pcs.len()];
+    let mut closed_side: Vec<Option<&str>> = vec![None; pcs.len()];
+    for k in 0..br.len() {
+        let pi = 2 * k + 1;
+        if let ArbPiece::Fixed(pv) = &pcs[pi] {
+            let bp = Poly::constant(br[k].clone());
+            let v = pv.subst_vars(&[bp.clone()]);
+            if let ArbPiece::Fixed(g) = &pcs[pi + 1] {
+                if g.subst_vars(&[bp.clone()]) == v && closed_side[pi + 1].is_none() {
+                    merged[pi] = true;
+                    closed_side[pi + 1] = Some("left");
+                    continue;
+                }
+            }
+            if let ArbPiece::Fixed(g) = &pcs[pi - 1] {
+                if g.subst_vars(&[bp]) == v && closed_side[pi - 1].is_none() {
+                    merged[pi] = true;
+                    closed_side[pi - 1] = Some("right");
+                }
+            }
+        }
+    }
+    for (i, p) in pcs.iter().enumerate() {
+        if merged[i] {
+            continue;
+        }
+        let (lo, hi) = fam.interval(i);
+        let (lt, gt) = match closed_side[i] {
+            Some("left") => ("≤", "≥"),
+            Some("right") => ("≤", "≥"),
+            _ => ("<", ">"),
+        };
+        let (lop, hop) = match closed_side[i] {
+            Some("left") => (gt, "<"),
+            Some("right") => (">", lt),
+            _ => (gt, lt),
+        };
+        let cond = match (&lo, &hi) {
+            (Some(a), Some(b)) if a == b => format!("x = {}", fmt_q(a)),
+            (None, Some(b)) => format!("x {} {}", hop, fmt_q(b)),
+            (Some(a), None) => format!("x {} {}", lop, fmt_q(a)),
+            (Some(a), Some(b)) => format!("{} {} x {} {}", fmt_q(a), if lop == "≥" { "≤" } else { "<" }, hop, fmt_q(b)),
+            (None, None) => "すべての x".into(),
+        };
+        let (is_fixed, d) = desc(p);
+        if is_fixed {
+            fixed.push(format!("{}（{}）", d, cond));
+        } else {
+            free.push(format!("{} では{}", cond, d));
+        }
+    }
+    let _ = br;
+    format!("f(x) = {}、{}", fixed.join("、"), free.join("、"))
+}
+
+/// 任意の区間をもつ族による病的な解の存在の説明（検証核の検証 verify_arbitrary の内容）
+pub fn render_arb_exist(_k: &Kernel, fam: &fe_kernel::ArbFamily) -> String {
+    format!(
+        "【病的な解の存在】\n{} は、任意に選べる区間での値をどのように選んでも解である。\n\
+         x, y の符号（負・0・正）で場合を分け、f の各引数が属する区間を符号から決めて（決まらなければ区間ごとに分けて）f を展開し、\
+         任意に選べる区間での値 f(t) は引数 t ごとに独立な記号（0 以上・0 以下などの制約つき、各点の選択は 2 通りに分ける）として、\
+         どの場合も左辺と右辺が恒等的に一致することを確かめた。\n\
+         任意に選べる点は無数にあるので、この族は区分的な式で書けない解（各点の選び方がルベーグ可測でないものなど）を含む。\n\
+         ほかに解があるかどうかは示せていない。\n",
+        fmt_arb(fam)
+    )
+}
+
 /// 区分的な族の表示（区切り点の値が隣の区間の式と一致すればまとめる）
 pub fn fmt_pw(fam: &fe_kernel::PwFamily) -> String {
     let n = Names::plain();

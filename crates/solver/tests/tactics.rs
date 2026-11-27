@@ -141,3 +141,30 @@ fn tactic_zero_lemma_chain() {
         check_families(eq, &l, &r, &out);
     }
 }
+
+/// 任意の区間をもつ族（病的な解の存在、特殊解決）: f の引数がいつも 0 以上になる型や、f が 2 乗でだけ現れる型。
+/// x ≥ 0 で f(x) = x、x < 0 では任意の値（0 以上・各点で ±x などの制約つき）を検証核で確かめる
+#[test]
+fn tactic_arbitrary_family() {
+    use fe_kernel::ArbPiece;
+    for (eq, want) in [
+        ("f(x^2 + f(2*y^2)) = x^2 + 2*y^2", "Free"),
+        ("f(2*f(x) + f(y)^2) = 2*f(x) + f(y)^2", "NonNeg"),
+        ("f(x^2 + 2*f(y)^2) = f(x)^2 + 2*y^2", "Choice"),
+    ] {
+        let (l, r, out) = run(eq, 20);
+        assert_eq!(out.status, "special_exist", "{}", eq);
+        let fam = out.arb_found.clone().expect("任意の区間をもつ族がない");
+        let kind = match &fam.pieces()[0] {
+            ArbPiece::Free => "Free",
+            ArbPiece::NonNeg => "NonNeg",
+            ArbPiece::NonPos => "NonPos",
+            ArbPiece::Choice(_, _) => "Choice",
+            ArbPiece::Fixed(_) => "Fixed",
+        };
+        assert_eq!(kind, want, "{}", eq);
+        let fresh = Kernel::new(l.clone(), r.clone()).unwrap();
+        assert!(fresh.verify_arbitrary(fam.breaks().to_vec(), fam.pieces().to_vec()).is_ok(), "{}: 新しい検証核で確かめられない", eq);
+        check_families(eq, &l, &r, &out);
+    }
+}

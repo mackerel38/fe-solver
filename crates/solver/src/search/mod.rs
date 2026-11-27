@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use util::*;
-pub use finalize::{find_candidates, find_pw_candidates};
+pub use finalize::{find_arb_candidates, find_candidates, find_pw_candidates};
 pub use util::{n_components, rank1_split};
 
 pub struct Searcher {

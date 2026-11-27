@@ -48,5 +48,5 @@ pub mod poly;
 
 pub use clause::{Clause, Lit, Rel};
 pub use kernel::{AddFamily, AddKind, BranchId, Conclusion, Fact, Family, Kernel, Rule, Split, ROOT};
-pub use piecewise::PwFamily;
+pub use piecewise::{ArbFamily, ArbPiece, PwFamily};
 pub use poly::{Atom, Mono, Poly, Q};

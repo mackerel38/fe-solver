@@ -129,6 +129,9 @@ fn real_main() -> i32 {
                 );
                 fams.extend(out.pw_families.iter().map(|f| json_str(&fe_render::fmt_pw(f))));
                 let mut found: Vec<String> = out.add_found.iter().map(|f| json_str(&fe_render::fmt_add_family(f))).collect();
+                if out.add_found.is_none() {
+                    found.extend(out.arb_found.iter().map(|f| json_str(&fe_render::fmt_arb(f))));
+                }
                 found.extend(
                     fe_render::display_families(&out.found)
                         .into_iter()

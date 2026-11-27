@@ -353,6 +353,38 @@ pub fn find_pw_candidates(k: &Kernel) -> Vec<fe_kernel::PwFamily> {
 }
 
 
+/// 任意の区間をもつ族の候補（病的な解の存在）: 0 を区切りに、片側を固定の式 g ∈ {x, −x, 0}、反対側を
+/// 任意の値（制約なし・0 以上・0 以下・各点で 2 つの式の一方）とした族を検証核で確かめ、最初に通ったものを返す。
+/// 効く類: 方程式の f の引数がいつも 0 以上（以下）になる型（f(x² + f(y²)) = x² + y²、f(f(x) + f(y)²) = f(x) + f(y)² など）、
+/// f の値が 2 乗や t·f(t) でだけ現れる型（各点で ±x を選べる）。
+pub fn find_arb_candidates(k: &Kernel) -> Option<fe_kernel::ArbFamily> {
+    use fe_kernel::ArbPiece::{Choice, Fixed, Free, NonNeg, NonPos};
+    let fixed: Vec<Poly> = vec![x(), x().neg(), Poly::zero()];
+    let arb = |g: &Poly| -> Vec<fe_kernel::ArbPiece> {
+        let mut v = vec![Free, NonNeg, NonPos];
+        for (a, b) in [(x(), x().neg()), (Poly::zero(), x()), (Poly::zero(), x().neg())] {
+            v.push(Choice(a, b));
+        }
+        let _ = g;
+        v
+    };
+    for g in &fixed {
+        for side in 0..2 {
+            for pc in arb(g) {
+                let pieces = if side == 0 {
+                    vec![pc, Fixed(Poly::zero()), Fixed(g.clone())]
+                } else {
+                    vec![Fixed(g.clone()), Fixed(Poly::zero()), pc]
+                };
+                if let Ok(fam) = k.verify_arbitrary(vec![Q::zero()], pieces) {
+                    return Some(fam);
+                }
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn vander(d: u32) -> Vec<Vec<Q>> {
     (0..=d).map(|i| (0..=d).map(|a| Q::from_integer((i as i64).pow(a).into())).collect()).collect::<Vec<_>>()
 }
