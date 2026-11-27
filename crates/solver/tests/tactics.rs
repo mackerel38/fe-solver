@@ -350,3 +350,24 @@ fn tactic_surjectivity_witness_large() {
         check_families(eq, &l, &r, &out);
     }
 }
+
+/// 条件つきの単射性の早期の当てはめと、1 つの原子のべき = 0 の零積: P(0, y) の f(f(y)²) = f(0) + 2y² から
+/// 「f(y) = f(z) なら y² = z²」を作り、P(0, 0) の f(f(0)²) = f(0) に当てはめて f(0)⁴ = 0、零積の規則で f(0) = 0
+/// （べきの規則として残さない）。問題集にない係数の式で、根の枝にこの f(0) = 0 ができること
+#[test]
+fn tactic_power_zero_from_value_lemma() {
+    let eq = "f(x*f(x) + f(y)^2) = f(x^2) + 2*y^2";
+    let (l, r, out) = run(eq, 10);
+    check_families(eq, &l, &r, &out);
+    let k = &out.kernel;
+    let f0 = Poly::f(Poly::zero());
+    let found = (0..k.num_facts()).filter_map(|i| k.fact_at(i)).any(|f| {
+        let c = k.clause(f);
+        c.nvars() == 0
+            && c.lits().len() == 1
+            && c.lits()[0].poly() == &f0
+            && matches!(k.fact(f).rule(), fe_kernel::Rule::ZeroProduct { premise, .. }
+                if k.clause(*premise).lits().len() == 1 && k.clause(*premise).lits()[0].poly().terms().len() == 1)
+    });
+    assert!(found, "{}: f(0)⁴ = 0 から零積の規則で f(0) = 0 が導かれていない", eq);
+}
