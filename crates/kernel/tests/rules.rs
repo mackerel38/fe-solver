@@ -794,3 +794,34 @@ fn affine_xy_rule() {
         assert_eq!(k9.affine_xy(b0, h0).is_ok(), ok, "条件 {:?}", side);
     }
 }
+
+/// 規則 AffineFF: f(c·f(x)f(y) + g(x)) = d·y·f(x) + h(x) の型から f は 1 次。形が違えば拒否
+#[test]
+fn affine_ff_rule() {
+    let fx = || f(x());
+    let fy = || f(y());
+    let concl = f(x()).sub(&f(c(1)).sub(&f(c(0))).mul(&x())).sub(&f(c(0)));
+    let check = |l: Poly, r: Poly, ok: bool, name: &str| {
+        let mut k = Kernel::new(l, r).unwrap();
+        let a = k.axiom();
+        let res = k.affine_ff(ROOT, a);
+        assert_eq!(res.is_ok(), ok, "{}", name);
+        if let Ok(fact) = res {
+            assert_eq!(*k.clause(fact), cl(1, vec![Lit::eq(concl.clone())]), "{}", name);
+        }
+    };
+    // f(f(x)² + f(x)f(y)) = f(x)² + y f(x)
+    check(f(fx().pow(2).add(&fx().mul(&fy()))), fx().pow(2).add(&y().mul(&fx())), true, "基本の形");
+    // 係数つき: f(2 f(x)f(y) + x) = 3 y f(x) + x²
+    check(f(fx().mul(&fy()).scale(&q(2)).add(&x())), y().mul(&fx()).scale(&q(3)).add(&x().pow(2)), true, "係数 c = 2, d = 3");
+    // 役割が逆: f(f(x)f(y) + y) = x f(y)
+    check(f(fx().mul(&fy()).add(&y())), x().mul(&fy()), true, "x と y の役割が逆");
+    // 右辺が x f(y)（別の型）は拒否
+    check(f(fx().mul(&fy()).add(&x())), x().mul(&fy()).add(&x()), false, "右辺が x f(y)");
+    // g が y を含む
+    check(f(fx().mul(&fy()).add(&y())), y().mul(&fx()), false, "g が y を含む");
+    // h が f(y) を含む
+    check(f(fx().mul(&fy())), y().mul(&fx()).add(&fy()), false, "h が f(y) を含む");
+    // y f(x) の項がない
+    check(f(fx().mul(&fy()).add(&x())), x().add(&fy()), false, "y f(x) の項がない");
+}

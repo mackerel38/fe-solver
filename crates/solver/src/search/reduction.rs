@@ -106,6 +106,11 @@ impl Searcher {
                 self.e.add_fact(st, r)?;
                 return Ok(());
             }
+            if let Ok(r) = self.e.k.affine_ff(st.b, u) {
+                self.bump("affine_ff");
+                self.e.add_fact(st, r)?;
+                return Ok(());
+            }
         }
         Ok(())
     }
