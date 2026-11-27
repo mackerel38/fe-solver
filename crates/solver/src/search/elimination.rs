@@ -326,6 +326,159 @@ impl Searcher {
         Ok(())
     }
 
+    /// 有理根による因数分解: 1 変数の節（単位等式、または 3 リテラルまでの選言）の等式リテラル p = 0 を A = f(x) の 3 次以上の
+    /// 多項式（係数は x の多項式）とみて、A = r·x（r は小さな有理数）で 0 になる因子 A − r·x を見つかる限り割り出し、
+    /// ZeroProduct で「(A − r₁x) = 0 ∨ … ∨ q = 0 ∨ 残りのリテラル」にする。q が x について同次で判別式が負の 2 次式なら、
+    /// q = 0 から x = 0 を導いてそのリテラルを置き換える（plain_rootless_quadratic）。変数のない事実は既存の処理に任せる。
+    /// 例: f(x)³ − x³ = 0 から「f(x) − x = 0 ∨ x = 0」（点の条件はすぐ外す）。
+    pub(crate) fn factor_linear_roots(&mut self, st: &mut BState) -> Res<()> {
+        let mut cands: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
+        cands.extend(st.others.iter().copied().filter(|&f| {
+            let c = self.e.clause(f);
+            c.nvars() == 1 && c.lits().len() <= 3
+        }));
+        let roots: Vec<Q> = [(0, 1), (1, 1), (-1, 1), (2, 1), (-2, 1), (1, 2), (-1, 2), (3, 1), (-3, 1)]
+            .iter()
+            .map(|(a, b)| Q::new((*a as i64).into(), (*b as i64).into()))
+            .collect();
+        let atom = Atom::F(std::rc::Rc::new(x()));
+        let ap = Poly::from_atom(atom.clone());
+        for f in cands {
+            if self.closed(st) {
+                return Ok(());
+            }
+            let key = format!("linroot|{:?}", f);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let c = self.e.clause(f).clone();
+            for (li, l) in c.lits().iter().enumerate() {
+                if l.rel() != Rel::Eq {
+                    continue;
+                }
+                let p = l.poly().clone();
+                let cs = coeffs_in(&p, &atom);
+                let deg = match cs.keys().max() {
+                    Some(d) => *d,
+                    None => continue,
+                };
+                if deg < 3 || deg > 6 || cs.values().any(|c| c.has_f()) {
+                    continue;
+                }
+                // 根を見つかる限り割り出す
+                let mut factors: Vec<Poly> = Vec::new();
+                let mut rest = p.clone();
+                loop {
+                    let d = coeffs_in(&rest, &atom).keys().max().copied().unwrap_or(0);
+                    if d < 2 {
+                        break;
+                    }
+                    let mut found = false;
+                    for r in &roots {
+                        let v = x().scale(r);
+                        if !rest.transform(&mut |a| if a == atom { v.clone() } else { Poly::from_atom(a) }).is_zero() {
+                            continue;
+                        }
+                        let lin = ap.sub(&v);
+                        if let Some(q) = crate::polyutil::exact_div(&rest, &lin) {
+                            factors.push(lin);
+                            rest = q;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        break;
+                    }
+                }
+                if factors.is_empty() {
+                    continue;
+                }
+                let residual = rest.clone();
+                factors.push(rest);
+                let z = match self.e.k.zero_product(st.b, f, li, factors) {
+                    Ok(z) => z,
+                    Err(_) => continue,
+                };
+                self.bump("linroot");
+                let z = self.plain_rootless_quadratic(st, z, &atom, &residual)?;
+                self.e.add_fact(st, z)?;
+                // 「x = 0 ∨ …」になったら、点の条件をすぐ外す（次のラウンドの場合分けより先に）
+                self.remove_point_conditions(st)?;
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// 1 変数の節のリテラル q = 0 で、q = a·A² + b·x·A + c·x²（A = f(x)、a, b, c は有理数、b² − 4ac < 0）なら、
+    /// q = 0 から x = 0 を導いてリテラルを置き換えた節を返す（できなければ元の節）。
+    /// 導出: −s·q + |a|·(A + b/(2a)·x)² = −|κ|·x²（s = a の符号、κ = (4ac − b²)/(4a)）なので PosComb で「−x² ≥ 0 ∨ 残り」、
+    /// 三分律と不等式の積で「x² > 0 ∨ x = 0」、両者の PosComb（厳密）で 0 > 0 が消え「x = 0 ∨ 残り」。
+    pub(crate) fn plain_rootless_quadratic(&mut self, st: &mut BState, z: Fact, atom: &Atom, q: &Poly) -> Res<Fact> {
+        let cs = coeffs_in(q, atom);
+        if cs.keys().max() != Some(&2) {
+            return Ok(z);
+        }
+        let xa = Atom::Var(0);
+        // 係数: A² の係数 a（有理数）、A の係数 b·x、定数項 c·x²
+        let a = match cs.get(&2).and_then(|c| c.as_const()) {
+            Some(a) if !a.is_zero() => a,
+            _ => return Ok(z),
+        };
+        let b1 = cs.get(&1).cloned().unwrap_or_else(Poly::zero);
+        let c0 = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
+        let bx = coeffs_in(&b1, &xa);
+        let cx = coeffs_in(&c0, &xa);
+        let b = if b1.is_zero() { Q::zero() } else if bx.len() == 1 { match (bx.get(&1)).and_then(|c| c.as_const()) { Some(b) => b, None => return Ok(z) } } else { return Ok(z) };
+        let c = if cx.len() == 1 { match cx.get(&2).and_then(|c| c.as_const()) { Some(c) => c, None => return Ok(z) } } else { return Ok(z) };
+        let four = Q::from_integer(4.into());
+        let disc = &b * &b - &four * &a * &c;
+        if !disc.is_negative() {
+            return Ok(z);
+        }
+        let bst = st.b;
+        let (iq, kq) = match find_lit(self.e.clause(z), q) {
+            Some(t) => t,
+            None => return Ok(z),
+        };
+        let s = if a.is_positive() { Q::one() } else { -Q::one() };
+        let two = Q::from_integer(2.into());
+        let sq = Poly::from_atom(atom.clone()).add(&x().scale(&(&b / (&two * &a))));
+        // −s·q + |a|·sq² = −|κ|·x²
+        let p1 = self.e.k.pos_comb(bst, 1, vec![], vec![(Poly::constant(-(&s) / &kq), z, iq)], vec![(a.abs(), sq)], Q::zero(), false)?;
+        let negx2 = x().mul(&x()).neg();
+        let i1 = match self.e.clause(p1).lits().iter().position(|l| l.rel() == Rel::Ge && scale_ratio(l.poly(), &negx2).map_or(false, |k| k.is_positive())) {
+            Some(i) => i,
+            None => return Ok(z),
+        };
+        // 「x² > 0 ∨ x = 0」
+        let tri = self.e.k.trichotomy(bst, 1, x())?;
+        let ipos = match self.e.clause(tri).lits().iter().position(|l| *l == Lit::gt(x())) {
+            Some(i) => i,
+            None => return Ok(z),
+        };
+        let c2 = self.e.k.mul_ineq(bst, tri, ipos, tri, ipos)?;
+        let ineg = match self.e.clause(c2).lits().iter().position(|l| *l == Lit::gt(x().neg())) {
+            Some(i) => i,
+            None => return Ok(z),
+        };
+        let c3 = self.e.k.mul_ineq(bst, c2, ineg, c2, ineg)?;
+        let x2 = x().mul(&x());
+        let i3 = match self.e.clause(c3).lits().iter().position(|l| *l == Lit::gt(x2.clone())) {
+            Some(i) => i,
+            None => return Ok(z),
+        };
+        if self.e.clause(c3).lits().len() != 2 {
+            return Ok(z);
+        }
+        let k1 = scale_ratio(self.e.clause(p1).lits()[i1].poly(), &negx2).unwrap_or_else(Q::one);
+        // 保存形: c3 は x² > 0、p1 は k1·(−x²) ≥ 0 → 係数 1 と 1/k1 で和が 0
+        let p2 = self.e.k.pos_comb(bst, 1, vec![(Q::one(), c3, i3), (Q::one() / &k1, p1, i1)], vec![], vec![], Q::zero(), true)?;
+        self.bump("rootless_quad");
+        Ok(p2)
+    }
+
     /// 2 次以上の因子で実数解をもたないもの（平方完成で正）を、矛盾として節から取り除く
     pub(crate) fn drop_rootless(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {
         let mut cur = f;
@@ -563,7 +716,8 @@ impl Searcher {
             };
             let r = is_point_cond(c.lits()[ci].poly()).unwrap();
             let qpoly = c.lits()[qi].poly().clone();
-            let key = format!("pc|{:?}", f);
+            // 規則が増えると Q(r) が 0 に書き換わるようになることがある（f(0) = 0 が後でわかるなど）ので、鍵に規則の数を含める
+            let key = format!("pc|{:?}|{}", f, st.rules.len());
             if st.tried.contains(&key) {
                 continue;
             }
