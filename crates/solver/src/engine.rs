@@ -1,7 +1,7 @@
 //! 探索エンジン: 検証核への推論規則の呼び出しを組み立てる。
 //! ここで作られる事実はすべて `Kernel` のメソッドの戻り値であり、探索部が事実を直接作ることはない。
 
-use crate::matching::match_atom;
+use crate::matching::{match_atom_shifted, shift_atom};
 use crate::order::{all_atoms_less, atom_cmp};
 use fe_kernel::{Atom, BranchId, Clause, Fact, Kernel, Lit, Poly, Rel, Q};
 use num_traits::{One, Zero};
@@ -20,6 +20,8 @@ pub struct RwRule {
     pub nvars: u32,
     pub lhs: Atom,
     pub rhs: Poly,
+    /// 照合用に変数を移した左辺（matching::shift_atom）
+    pub pat: Atom,
 }
 
 /// 条件付きの書き換え規則: 節「条件リテラル ∨ lhs − rhs = 0」で、条件リテラルの否定が示せる場所でだけ使う
@@ -30,6 +32,8 @@ pub struct CondRule {
     pub eq_idx: usize,
     pub lhs: Atom,
     pub rhs: Poly,
+    /// 照合用に変数を移した左辺（matching::shift_atom）
+    pub pat: Atom,
 }
 
 /// 枝ごとの知識
@@ -205,7 +209,7 @@ impl Engine {
                     continue;
                 }
             }
-            if let Some(s) = match_atom(&r.lhs, r.nvars, &cur_atom) {
+            if let Some(s) = match_atom_shifted(&r.pat, r.nvars, &cur_atom) {
                 let rhs = r.rhs.subst_vars(&s);
                 if all_atoms_less(&rhs, &cur_atom) {
                     applied = Some((ri, s, rhs));
@@ -306,7 +310,7 @@ impl Engine {
     /// 条件付き規則を原子 a に適用する。条件の否定を平方和で示せたときだけ、単位等式「a − rhs = 0」を作る。
     fn apply_cond_rules(&mut self, st: &mut BState, a: &Atom, n: u32) -> Res<Option<(Fact, Poly)>> {
         for cr in st.cond_rules.clone() {
-            let s = match match_atom(&cr.lhs, cr.nvars, a) {
+            let s = match match_atom_shifted(&cr.pat, cr.nvars, a) {
                 Some(s) => s,
                 None => continue,
             };
@@ -430,7 +434,8 @@ impl Engine {
         let (a, coef) = best?;
         let rest = p.sub(&Poly::from_atom(a.clone()).scale(&coef));
         let rhs = rest.scale(&(-Q::one() / coef));
-        Some(CondRule { fact: f, nvars: c.nvars(), eq_idx, lhs: a, rhs })
+        let pat = shift_atom(&a, c.nvars());
+        Some(CondRule { fact: f, nvars: c.nvars(), eq_idx, lhs: a, rhs, pat })
     }
 
     /// 多項式 p を正規化する。戻り値 (p', items) は p − p' = Σ coef · (保存形) を満たす。
@@ -747,7 +752,8 @@ impl Engine {
         }
         let rest = p.sub(&Poly::from_atom(a.clone()).scale(&coef));
         let rhs = rest.scale(&(-Q::one() / coef));
-        Some(RwRule { fact: f, nvars: c.nvars(), lhs: a, rhs })
+        let pat = shift_atom(&a, c.nvars());
+        Some(RwRule { fact: f, nvars: c.nvars(), lhs: a, rhs, pat })
     }
 
     /// 規則を加え、既存の単位等式・規則を相互簡約する
@@ -1214,7 +1220,7 @@ fn hit_poly(r: &RwRule, ld: u32, p: &Poly) -> (bool, u32) {
 
 fn rule_hits(r: &RwRule, a: &Atom) -> bool {
     match (&r.lhs, a) {
-        (Atom::F(_), Atom::F(_)) | (Atom::Inv(_), Atom::Inv(_)) => match match_atom(&r.lhs, r.nvars, a) {
+        (Atom::F(_), Atom::F(_)) | (Atom::Inv(_), Atom::Inv(_)) => match match_atom_shifted(&r.pat, r.nvars, a) {
             Some(s) => all_atoms_less(&r.rhs.subst_vars(&s), a),
             None => false,
         },
