@@ -597,6 +597,28 @@ impl Searcher {
         Ok(true)
     }
 
+    /// 逆数のわかる閉じた係数での 1 次の代入: 1 変数の事実の f の引数が c·x + d（c は逆数のわかる閉じた式）なら x := (x − d)/c。
+    /// 安くて決定的なこと（f(e·x) = 0 と e ≠ 0 から f ≡ 0 など）が多いので、場合分けより先に毎ラウンド行う。
+    pub(crate) fn affine_inverse_ones(&mut self, st: &mut BState) -> Res<()> {
+        if st.invs.is_empty() {
+            return Ok(());
+        }
+        let ones: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
+        for f in ones {
+            let p = self.e.poly0(f);
+            for sb in affine_inv_substs(&p, &st.invs) {
+                if self.closed(st) {
+                    return Ok(());
+                }
+                if !st.units.contains(&f) {
+                    break;
+                }
+                self.try_instance(st, f, vec![sb], 1)?;
+            }
+        }
+        Ok(())
+    }
+
     /// 条件の外せる点での例化: 2 つ以上のリテラルをもつ事実で、1 つの変数 w だけを含む等式リテラル p(w) = 0 について、
     /// この枝の閉じた ≠ の事実 u ≠ 0 に現れる定数 K で p(K) が u の定数倍になるなら、w := K と例化する
     /// （追加時に既知の ≠ の事実でそのリテラルが外れる）。例: 「f(x) = 0 ∨ f(y) = y + f(x) − x」と f(a) ≠ 0 から f(y) = y + f(a) − a。
