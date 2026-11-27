@@ -13,6 +13,10 @@
 //!      ことを確認する。点の区間 {b} の条件 v = b は、v が変数について定数係数の 1 次なら代入して使う。
 //!   どの場合も示せなければ検証は失敗する（健全だが不完全）。
 //!
+//! 点の区間 {b} の式には、パラメータ（Var(2), Var(3), …。任意の実数を表す）を使ってよい（x ≠ 0 で 0、x = 0 で任意の c など）。
+//! パラメータを含む式の符号はわからないものとして扱う（引数の区間への所属は場合分けされる）ので、検証はパラメータの
+//! すべての値について成り立つことを示す。条件 v = b は、v がパラメータについて定数係数の 1 次でも代入して使う。
+//!
 //! 任意の区間をもつ族（ArbFamily、病的な解の存在の証明に使う）: 開区間の一部を「任意の値」にできる。
 //!   - Free: その区間で f は任意の関数。NonNeg / NonPos: 値が 0 以上 / 0 以下の任意の関数。
 //!   - Choice(g₁, g₂): 各点ごとに g₁(x) か g₂(x) のどちらかを任意に選ぶ（g₁ ≠ g₂）。
@@ -36,6 +40,13 @@ pub struct PwFamily {
 }
 
 impl PwFamily {
+    /// 式に現れるパラメータ（Var(2) 以降の番号）
+    pub fn params(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = self.pieces.iter().flat_map(|g| g.vars()).filter(|&v| v >= 2).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
     pub fn breaks(&self) -> &[Q] {
         &self.breaks
     }
@@ -361,6 +372,12 @@ fn case_ok(case: &Case, breaks: &[Q]) -> bool {
             let d = v.sub(&Poly::constant(b));
             // 解く原子: 変数 x, y と、任意の値の記号（Const 原子）
             let mut cands: Vec<Atom> = vec![Atom::Var(0), Atom::Var(1)];
+            // パラメータ（点の区間の式の任意の実数）についても解く
+            for v in d.vars() {
+                if v >= 2 {
+                    cands.push(Atom::Var(v));
+                }
+            }
             for c in d.consts() {
                 if c >= SYM_BASE {
                     cands.push(Atom::Const(c));
@@ -469,8 +486,14 @@ fn verify_general(lhs: &Poly, rhs: &Poly, breaks: &[Q], pieces: &[ArbPiece]) -> 
     for (i, pc) in pieces.iter().enumerate() {
         match pc {
             ArbPiece::Fixed(g) => {
-                if !is_x_poly(g) {
-                    return Err("各区間の式は x の有理数係数の多項式でなければならない".into());
+                // パラメータ（Var(2) 以降）は点の区間の式にだけ使える
+                let ok = g.terms().iter().all(|(m, _)| m.factors().iter().all(|(a, _)| match a {
+                    Atom::Var(0) => true,
+                    Atom::Var(k) if *k >= 2 => i % 2 == 1,
+                    _ => false,
+                }));
+                if !ok {
+                    return Err("各区間の式は x の有理数係数の多項式（点の区間ではパラメータも可）でなければならない".into());
                 }
             }
             ArbPiece::Choice(g1, g2) => {

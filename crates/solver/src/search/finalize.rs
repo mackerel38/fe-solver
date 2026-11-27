@@ -271,19 +271,23 @@ impl Searcher {
         let neg = find(self, None, Some(zero.clone()), false);
         let pt = find(self, Some(zero.clone()), Some(zero.clone()), true);
         let pos = find(self, Some(zero.clone()), None, false);
-        let (neg, pt, pos) = match (neg, pt, pos) {
-            (Some(a), Some(b), Some(c)) => (a, b, c),
+        let (neg, pos) = match (neg, pos) {
+            (Some(a), Some(c)) => (a, c),
             _ => return Ok(false),
         };
-        let pv = pt.1.subst_vars(&[Poly::zero()]);
-        if neg.1 == pos.1 && pv == pos.1.subst_vars(&[Poly::zero()]) {
+        // 0 での値が事実で決まらなければ、パラメータ c（任意の実数）とする
+        let (pv, pfact) = match &pt {
+            Some((f, h)) => (h.subst_vars(&[Poly::zero()]), Some(*f)),
+            None => (Poly::var(2), None),
+        };
+        if pfact.is_some() && neg.1 == pos.1 && pv == pos.1.subst_vars(&[Poly::zero()]) {
             return Ok(false); // 多項式の解（通常の仕上げで扱う）
         }
         let fam = match self.e.k.verify_piecewise(vec![zero], vec![neg.1.clone(), pv, pos.1.clone()]) {
             Ok(f) => f,
             Err(_) => return Ok(false),
         };
-        self.e.k.mark_piecewise(st.b, vec![neg.0, pt.0, pos.0], fam)?;
+        self.e.k.mark_piecewise(st.b, vec![Some(neg.0), pfact, Some(pos.0)], fam)?;
         self.bump("piecewise_leaf");
         Ok(true)
     }

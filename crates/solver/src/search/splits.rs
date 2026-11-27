@@ -30,6 +30,70 @@ impl Searcher {
         Ok(true)
     }
 
+    /// パラメータつきの区分的な族の候補による場合分け: 「x ≠ 0 で g(x)、x = 0 で任意の c」がすべての c で解（検証核で確かめる）
+    /// なら、「∀x. x = 0 ∨ f(x) = g(x)」か「ある a ≠ 0 で f(a) ≠ g(a)」か（排中律）で分ける。前者はパラメータつきの区分的な族で
+    /// 確定する（mark_piecewise、0 での値は c）。g は 0, ±x, ±1, x ± 1, 2x, x/2, −2x から探す。
+    pub(crate) fn param_family_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {
+        if st.tried.contains("pfs") {
+            return Ok(false);
+        }
+        st.tried.insert("pfs".into());
+        use fe_kernel::poly::{q, qf};
+        let side: Vec<Poly> = vec![
+            Poly::zero(),
+            x(),
+            x().neg(),
+            Poly::one(),
+            Poly::int(-1),
+            x().add(&Poly::one()),
+            x().sub(&Poly::one()),
+            x().scale(&q(2)),
+            x().scale(&qf(1, 2)),
+            x().scale(&q(-2)),
+        ];
+        let mut g: Option<Poly> = None;
+        for cand in side {
+            if self.e.k.verify_piecewise(vec![Q::zero()], vec![cand.clone(), Poly::var(2), cand.clone()]).is_ok() {
+                g = Some(cand);
+                break;
+            }
+        }
+        let g = match g {
+            Some(g) => g,
+            None => return Ok(false),
+        };
+        let c = fe_kernel::Clause::new(1, vec![Lit::eq(x()), Lit::eq(Poly::f(x()).sub(&g))]).map_err(|e| e.to_string())?;
+        let (c0, h0, c1, hs, _consts) = self.e.k.split_em(st.b, c)?;
+        self.bump("param_family_split");
+        // 子 0: x ≠ 0 で f(x) = g(x)。すぐに区分的な族で確定を試す
+        let mut s0 = st.child(c0);
+        s0.tried.insert("pfs".into());
+        match self.e.add_fact(&mut s0, h0) {
+            Ok(_) => {
+                if !self.closed(&s0) && !self.try_piecewise_leaf(&mut s0)? {
+                    self.solve_branch(s0, depth + 1)?;
+                }
+            }
+            Err(m) if m == TIMEOUT => self.open.push((c0, TIMEOUT.into())),
+            Err(m) => return Err(m),
+        }
+        // 子 1: ある a ≠ 0 で f(a) ≠ g(a)
+        let mut s1 = st.child(c1);
+        s1.tried.insert("pfs".into());
+        let r = (|| -> Res<()> {
+            for h in &hs {
+                self.e.add_fact(&mut s1, *h)?;
+            }
+            Ok(())
+        })();
+        match r {
+            Ok(()) => self.solve_branch(s1, depth + 1)?,
+            Err(m) if m == TIMEOUT => self.open.push((c1, TIMEOUT.into())),
+            Err(m) => return Err(m),
+        }
+        Ok(true)
+    }
+
     /// 恒等関数の候補による場合分け: 「∀x. f(x) = x」か「ある a で f(a) ≠ a」か（排中律）。
     /// 後者では点 a と f(a) − a ≠ 0（逆数）を代入・約分に使う。
     pub(crate) fn identity_split(&mut self, st: &mut BState, depth: u32) -> Res<bool> {

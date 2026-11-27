@@ -911,11 +911,39 @@ pub fn render_arb_exist(_k: &Kernel, fam: &fe_kernel::ArbFamily) -> String {
 
 /// 区分的な族の表示（区切り点の値が隣の区間の式と一致すればまとめる）
 pub fn fmt_pw(fam: &fe_kernel::PwFamily) -> String {
-    let n = Names::plain();
+    let ps = fam.params();
+    let np = ps.len();
+    let pname = |v: u32| -> String {
+        let i = ps.iter().position(|&p| p == v).unwrap_or(0);
+        if np == 1 {
+            "c".to_string()
+        } else {
+            format!("c{}", i + 1)
+        }
+    };
+    let pf = |a: &Atom| match a {
+        Atom::Var(i) if *i >= 2 => Some(pname(*i)),
+        _ => None,
+    };
+    let n = Names { param: Some(&pf) };
     let br = fam.breaks();
     let pcs = fam.pieces();
-    let mut parts: Vec<String> = Vec::new();
     let qs = |q: &Q| fmt_q(q);
+    let suffix = if np > 0 {
+        let names: Vec<String> = ps.iter().map(|&v| pname(v)).collect();
+        format!("（{} は任意の実数）", names.join(", "))
+    } else {
+        String::new()
+    };
+    // 区切り点が 1 つで両側の式が同じなら「x ≠ b で g、x = b で v」とまとめる
+    if br.len() == 1 && pcs[0] == pcs[2] {
+        let bp = Poly::constant(br[0].clone());
+        let pv = pcs[1].subst_vars(&[bp.clone()]);
+        if pv != pcs[0].subst_vars(&[bp]) {
+            return format!("f(x) = {}（x ≠ {}）, {}（x = {}）{}", fmt_poly(&pcs[0], &n), qs(&br[0]), fmt_poly(&pv, &n), qs(&br[0]), suffix);
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
     for (k, b) in br.iter().enumerate() {
         let left = &pcs[2 * k];
         let pt = &pcs[2 * k + 1];
@@ -952,7 +980,7 @@ pub fn fmt_pw(fam: &fe_kernel::PwFamily) -> String {
             parts.push(format!("{}（{}）", fmt_poly(right, &n), rc));
         }
     }
-    format!("f(x) = {}", parts.join(", "))
+    format!("f(x) = {}{}", parts.join(", "), suffix)
 }
 
 /// 方程式の表示

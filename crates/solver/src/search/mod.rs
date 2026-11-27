@@ -204,6 +204,9 @@ impl Searcher {
             if round == 1 && depth < self.max_depth && self.zero_split(st, depth)? {
                 return Ok(());
             }
+            if round == 1 && depth <= 3 && self.param_family_split(st, depth)? {
+                return Ok(());
+            }
             if round == 2 && depth <= 4 && self.identity_split(st, depth)? {
                 return Ok(());
             }
