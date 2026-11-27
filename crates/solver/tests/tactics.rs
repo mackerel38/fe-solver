@@ -414,3 +414,16 @@ fn tactic_additive_square_type() {
         assert!(out.families.iter().any(|f| fresh.verify_solution(f.g()).is_ok()), "{}: 解の族がない", eq);
     }
 }
+
+/// 右辺が同じ 2 つの書き換え規則への条件つきの単射性の当てはめ（apply_cond_injectivity の規則の組）: P(x, 0) の f(x²) = x f(x) と
+/// P(0, y) の f(f(y)²) = y f(y) はどちらも規則になり、差 f(f(x)²) − f(x²) = 0 は正規化で消えるので、差を一次結合で作って
+/// 「f(y) = f(x) なら (y − x) f(x) = 0」に当てはめる。問題集にない係数の式（FE-0206 の型）でこの当てはめが働き、
+/// 報告した解の族が新しい検証核でも解であること
+#[test]
+fn tactic_cond_injectivity_rule_pairs() {
+    let eq = "f(x^2 + f(y)^2) = 2*x*f(x) - f(x^2) + y*f(y)";
+    let (l, r, out) = run(eq, 30);
+    let used = out.stats.iter().find(|(k, _)| k == "cinj_rule_pair").map_or(0, |(_, v)| *v);
+    assert!(used > 0, "{}: 右辺が同じ規則の組への当てはめが働いていない", eq);
+    check_families(eq, &l, &r, &out);
+}
