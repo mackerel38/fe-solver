@@ -12,6 +12,63 @@ use super::util::*;
 use super::{Fin, Searcher};
 
 impl Searcher {
+    /// ずらしの差: 2 変数の単位等式 p(x, y) と、ずらした例 p(x, y ± 1)、p(x ± 1, y)（追加時に f(t + 1) = f(t) + c などの規則で
+    /// 書き換わる）の差をとり、項が減るなら加える（Instantiate, LinComb）。例: f(xf(x) + xy) = x² + f(x)f(y) と
+    /// f(t + 1) = f(t) + 1 から f(xf(x) + xy + x) = f(xf(x) + xy) + f(x)（左辺の引数は y について 1 次なので、分数の代入で加法性へ）。
+    pub(crate) fn shift_differences(&mut self, st: &mut BState) -> Res<()> {
+        let mut units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+        units.sort_by_key(|f| poly_size(&self.e.poly0(*f)));
+        units.truncate(self.scaled(3));
+        let one = Poly::one();
+        let shifts: Vec<Vec<Poly>> = vec![
+            vec![x(), y().add(&one)],
+            vec![x().add(&one), y()],
+            vec![x(), y().sub(&one)],
+            vec![x().sub(&one), y()],
+        ];
+        for u in units {
+            for sb in &shifts {
+                if self.closed(st) || !st.units.contains(&u) {
+                    return Ok(());
+                }
+                let key = format!("shiftdiff|{:?}|{:?}", u, sb);
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let inst = self.e.k.instantiate(st.b, u, sb.clone(), 2)?;
+                let nf = match self.e.add_fact(st, inst)? {
+                    Added::New(nf) => nf,
+                    _ => continue,
+                };
+                if self.e.clause(nf).lits().len() != 1 || self.e.nvars(nf) != 2 {
+                    continue;
+                }
+                let pn = self.e.poly0(nf);
+                let pu = self.e.poly0(u);
+                // 共通の単項式の係数をそろえて引き、項が減るものを探す
+                let mut best: Option<Q> = None;
+                for (m, cu) in pu.terms() {
+                    if let Some((_, cn)) = pn.terms().iter().find(|(m2, _)| m2 == m) {
+                        let k = cn / cu;
+                        let d = pn.sub(&pu.scale(&k));
+                        if d.has_f() && d.terms().len() < pn.terms().len() && best.as_ref().map_or(true, |_| true) {
+                            best = Some(k);
+                            break;
+                        }
+                    }
+                }
+                let k = match best {
+                    Some(k) => k,
+                    None => continue,
+                };
+                let r = self.e.k.lincomb(st.b, 2, vec![(Poly::one(), nf, 0), (Poly::constant(-k), u, 0)])?;
+                self.bump("shift_diff");
+                self.e.add_fact(st, r)?;
+            }
+        }
+        Ok(())
+    }
+
     /// 入れ替えの差: 2 変数の単位等式 p(x, y) = 0 から、x と y を入れ替えた例 p(y, x) = 0 との差
     /// p(x, y) − p(y, x) = 0 を作る（一次結合）。右辺が対称なら f(A(x, y)) − f(A(y, x)) = 0 のような事実になる。
     /// 入れ替えた例そのものは既知として加えないため、差は別に作る必要がある。項が減る（2 つの f の差など）ときだけ加える。

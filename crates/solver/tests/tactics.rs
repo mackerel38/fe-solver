@@ -195,3 +195,15 @@ fn tactic_zero_lemma_in_disjunction() {
     assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
     check_families(eq, &l, &r, &out);
 }
+
+/// ずらしの差: P(x, y + 1) − P(x, y)（f(t + 1) = f(t) + c で書き換わる）から f(A + x) = f(A) + f(x)、A が y について 1 次なので
+/// 分数の代入で加法性 f(s + x) = f(s) + f(x)。f(c·x·f(x) + xy) = c·x² + f(x)f(y) の型
+#[test]
+fn tactic_shift_difference() {
+    let eq = "f(2*x*f(x) + x*y) = 2*x^2 + f(x)*f(y)";
+    let (l, r, out) = run(eq, 60);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    assert_eq!(got, vec!["x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+}
