@@ -157,6 +157,11 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            // 逆数の代入 x := K/x（f の引数の 1/x を消す）
+            self.reciprocal_instances(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             // 既知の型（f(xy + g(x)) = x f(y) + h(x) なら f は 1 次）
             self.apply_known_types(st)?;
             if self.closed(st) {

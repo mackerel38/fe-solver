@@ -597,7 +597,11 @@ impl Searcher {
         for a in &atoms {
             if let Atom::F(t) = a {
                 let tr = t.subst_vars(&[rp.clone()]);
-                let m = div_linear(&t.sub(&tr), 0, &rp).ok_or("割り切れない")?;
+                // 割り切れない（引数に 1/x などを含む）ときは、この処理をやめる（探索は続ける）
+                let m = match div_linear(&t.sub(&tr), 0, &rp) {
+                    Some(m) => m,
+                    None => return Ok(None),
+                };
                 // f(tr + m·(x − r)) − f(tr) = 0 ∨ x − r ≠ 0
                 let g = self.e.k.congruence(b, 1, tr.clone(), vec![(m.scale(&(Q::one() / &lam_em)), em, ei)])?;
                 let gi = self.e.clause(g).lits().iter().position(|l| l.rel() == Rel::Eq).unwrap();
@@ -610,7 +614,10 @@ impl Searcher {
         }
         // cur(x) − cur(r) = B·(x − r)
         let cr = cur.subst_vars(&[rp.clone()]);
-        let bq = div_linear(&cur.sub(&cr), 0, &rp).ok_or("割り切れない")?;
+        let bq = match div_linear(&cur.sub(&cr), 0, &rp) {
+            Some(q) => q,
+            None => return Ok(None),
+        };
         if !bq.is_zero() {
             items.push((bq.scale(&(Q::one() / &lam_em)), em, ei));
         }
