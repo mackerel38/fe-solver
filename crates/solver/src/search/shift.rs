@@ -395,16 +395,20 @@ impl Searcher {
         if st.cinj.is_empty() {
             return Ok(());
         }
-        // 当てはめる相手は変数のない事実と小さい 1 変数の事実に限り、1 回の呼び出しで最大 scaled(40) 回
+        // 当てはめる相手は変数のない事実と小さい 1 変数の事実に限る。1 変数の事実を先に（変数のない事実が多いと予算を使い切って
+        // f(x f(x)) = f(x²) のような事実に届かないので）、予算は別々に（1 変数 scaled(20) 回、変数なし scaled(40) 回）
         let mut units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) <= 1).collect();
-        units.sort_by_key(|f| (self.e.nvars(*f), poly_size(&self.e.poly0(*f))));
-        let mut budget = self.scaled(40);
+        units.sort_by_key(|f| (1 - self.e.nvars(*f), poly_size(&self.e.poly0(*f))));
+        let mut budget1 = self.scaled(20);
+        let mut budget0 = self.scaled(40);
         for u in units {
-            if budget == 0 {
-                return Ok(());
+            let one = self.e.nvars(u) == 1;
+            if (one && budget1 == 0) || (!one && budget0 == 0) {
+                continue;
             }
             let p = self.e.poly0(u);
-            if p.terms().len() != 2 || poly_size(&p) > 30 {
+            // 大きさの上限 48（f(x²) − f(x·f(x)) が 31。以前の 30 ではこの事実に当てはめられなかった）
+            if p.terms().len() != 2 || poly_size(&p) > 48 {
                 continue;
             }
             let (m1, c1) = &p.terms()[0];
@@ -417,7 +421,11 @@ impl Searcher {
                 _ => continue,
             };
             let nv = self.e.nvars(u);
-            budget -= 1;
+            if one {
+                budget1 -= 1;
+            } else {
+                budget0 -= 1;
+            }
             for ci in st.cinj.clone() {
                 for (a, bb) in [(s2.clone(), s1.clone()), (s1.clone(), s2.clone())] {
                     let key = format!("cinj|{:?}|{:?}|{}", u, ci, a);
