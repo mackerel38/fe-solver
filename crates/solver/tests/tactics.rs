@@ -266,3 +266,16 @@ fn tactic_rule_guided_substitution() {
     assert_eq!(got, vec!["-x".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
     check_families(eq, &l, &r, &out);
 }
+
+/// 符号の議論の基本部品: 各点の選言（f(t) ∈ {0, t}）を、事実に現れる f の引数 t（変数を含む式）で例化し、規則で書き換えた後、
+/// 平方和で正とわかるリテラル（u ≠ 0 なら u² > 0、2 項の等式で平方に置き換える）を外す。f(x² + c·y²) 型
+#[test]
+fn tactic_sign_reasoning_sos() {
+    let eq = "f(x^2 + 4*y^2) = x*f(x) + f(2*y)^2";
+    let (l, r, out) = run(eq, 90);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    got.sort();
+    assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+}

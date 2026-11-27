@@ -63,6 +63,8 @@ pub struct BState {
     pub cinj: Vec<Fact>,
     /// 探索のラウンドをどこから始めるか（補題を加えただけの子の枝は、親のラウンドから続ける）
     pub start_round: usize,
+    /// 閉じた u ≠ 0 から作った「u² > 0」の事実（正の値の判定に使う）
+    pub pos_sq: Vec<(Poly, Fact)>,
 }
 
 impl BState {
@@ -85,6 +87,7 @@ impl BState {
             tried: HashSet::new(),
             cinj: Vec::new(),
             start_round: 0,
+            pos_sq: Vec::new(),
         }
     }
     /// 子の枝用の複製（キャッシュは引き継がない）
