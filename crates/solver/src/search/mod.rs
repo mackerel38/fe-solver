@@ -282,6 +282,11 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            // 有理根による因数分解（1 変数の 3 次以上）
+            self.factor_linear_roots(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             let r = self.square_ranges(st);
             r?;
             if self.closed(st) {

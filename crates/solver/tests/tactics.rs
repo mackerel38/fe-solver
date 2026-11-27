@@ -384,3 +384,17 @@ fn tactic_cond_injectivity_fixpoint() {
     assert_eq!(got, vec!["x".to_string()], "{}: 解の集合 {:?}", eq, got);
     check_families(eq, &l, &r, &out);
 }
+
+/// 有理根による因数分解（factor_linear_roots）と、x について同次で判別式が負の 2 次の因子の除去（plain_rootless_quadratic）、
+/// 点の条件 x = 0 の除去: f(x)³ = 8x³ から「f(x) − 2x = 0 ∨ f(x)² + 2x·f(x) + 4x² = 0」、後者は x = 0 のときだけなので
+/// 「f(x) − 2x = 0 ∨ x = 0」、f(0)³ = 0 から f(0) = 0 で f(x) = 2x。3 次の係数を変えた式でも
+#[test]
+fn tactic_linear_root_factoring() {
+    for (eq, want) in [("f(x)^3 = 8*x^3 + 0*y", "2*x"), ("f(x)^3 + x*f(x)^2 = 2*x^3 + 0*y", "x"), ("f(x)^3 = -x^3 + 0*y", "-x")] {
+        let (l, r, out) = run(eq, 20);
+        assert_eq!(out.status, "complete", "{}", eq);
+        let got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+        assert_eq!(got, vec![want.to_string()], "{}: 解の集合 {:?}", eq, got);
+        check_families(eq, &l, &r, &out);
+    }
+}
