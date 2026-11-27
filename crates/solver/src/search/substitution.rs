@@ -389,6 +389,26 @@ impl Searcher {
 
     /// 全射性の証人 S（f(S(t)) = t）。1 変数の単位等式 f(u(x)) = a·x + b（a ≠ 0 の有理数, b は閉じた式）から S(t) = u((t − b)/a)
     pub(crate) fn witnesses(&self, st: &BState) -> Vec<Poly> {
+        // 結果は枝・単位等式の一覧・逆数の一覧だけで決まる（事実の式は変わらない）ので、これらが同じなら前回の結果を使う
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            st.b.hash(&mut h);
+            st.units.hash(&mut h);
+            st.invs.hash(&mut h);
+            h.finish()
+        };
+        if let Some((k, w)) = self.wit_cache.borrow().as_ref() {
+            if *k == key {
+                return w.clone();
+            }
+        }
+        let out = self.witnesses_uncached(st);
+        *self.wit_cache.borrow_mut() = Some((key, out.clone()));
+        out
+    }
+
+    fn witnesses_uncached(&self, st: &BState) -> Vec<Poly> {
         let mut out: Vec<Poly> = Vec::new();
         for &f in &st.units {
             if self.e.nvars(f) != 1 {

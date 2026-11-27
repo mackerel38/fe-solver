@@ -39,6 +39,8 @@ pub struct Searcher {
     pub(crate) add_fam: Option<Option<AddFamily>>,
     /// 検証核で確かめた多項式の解の候補（補題の推測に使う。パラメータは Const(1000…) の記号）
     pub(crate) sols: Vec<Poly>,
+    /// 全射性の証人の前回の結果（枝・単位等式の一覧・逆数の一覧のハッシュが同じなら使い回す）
+    pub(crate) wit_cache: std::cell::RefCell<Option<(u64, Vec<Poly>)>>,
 }
 
 pub enum Fin {
@@ -49,7 +51,7 @@ pub enum Fin {
 impl Searcher {
     pub fn new(e: Engine) -> Searcher {
         let sols: Vec<Poly> = finalize::find_candidates(&e.k).iter().map(|f| f.g().clone()).collect();
-        Searcher { e, reduce_depth: 0, width: 1.0, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new(), add_fam: None, sols }
+        Searcher { e, reduce_depth: 0, width: 1.0, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new(), add_fam: None, sols, wit_cache: Default::default() }
     }
 
     pub(crate) fn add_time(&mut self, k: &str, t0: Instant) {
