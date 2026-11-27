@@ -28,7 +28,8 @@
 | SquareRange | 変数が 2 乗でだけ現れる事実を t ≥ 0 の事実にする | square_range_rule |
 | InvAxiom / Weaken | u = 0 ∨ u·inv(u) = 1、A から A ∨ B | inv_axiom_and_weaken |
 | CauchyBounded | 加法的で片側に有界なら 1 次関数 | cauchy_bounded_rule |
-| AffineXY | 既知の型 f(a·xy + g(x)) = a·x·f(y) + h(x)（g, h は y を含まない。x と y の役割が逆でもよい）なら f(x) = (f(1) − f(0))x + f(0)（D35） | affine_xy_rule |
+| AffineXY | 既知の型 f(a·xy + g(x)) = a·x·f(y) + h(x)（g, h は y を含まない。x と y の役割が逆でもよい。前提は「x = 0 ∨ …」の x ≠ 0 でだけ成り立つ形でもよい）なら f(x) = (f(1) − f(0))x + f(0)（D35, D37） | affine_xy_rule |
+| AffineFF | 既知の型 f(c·f(x)f(y) + g(x)) = d·y·f(x) + h(x)（c, d ≠ 0）なら f は 1 次（全単射になり、逆関数で変数を取り替えると x ≠ 0 版の AffineXY に帰着。D37） | affine_ff_rule |
 | （解の族の検証）verify_solution / verify_piecewise / verify_additive(_kind) / verify_arbitrary | 事実は作らず、解の族の値（検証済みの印）だけを作る。詳細は 2 節 | 2 節の各テスト |
 | ImportLemma | 別に解いた方程式（補題）の解の集合を取り込む | import_lemma_rule |
 | 場合分け | 変数を共有しない選言の分割（SplitComponents）、排中律（SplitExcludedMiddle）、Merge、AbandonSplit | split_components_rejects_pointwise_disjunction, merge_rules, abandon_split_rule など |
@@ -107,8 +108,11 @@
 
 ### 3.5 帰着
 - 導いた 2 変数の等式を新しい方程式として別に解き、完全解決すれば補題として取り込む（ImportLemma）。第 4 ラウンドから・1 回・最大 3 秒
-- 既知の型の当てはめ（reduction.rs の apply_known_types）: 2 変数の単位等式が f(a·xy + g(x)) = a·x·f(y) + h(x) の型なら
-  検証核の規則 AffineXY で f は 1 次。場合分けより先に毎ラウンド（形が合わなければ検証核が拒否するだけ）。
+- 既知の型の当てはめ（reduction.rs の apply_known_types）: 2 変数の単位等式（と「x = 0 ∨ …」の 2 リテラルの事実）が
+  f(a·xy + g(x)) = a·x·f(y) + h(x) の型なら AffineXY、f(c·f(x)f(y) + g(x)) = d·y·f(x) + h(x) の型なら AffineFF で f は 1 次。
+  場合分けより先に毎ラウンド（形が合わなければ検証核が拒否するだけ）。tactic_affine_ff_type も参照。
+  型の見つけ方: 「f(α(x,y) + g(x)) = β(x,y) + h(x)」で g, h を具体的な関数にした例をソルバで解き、どの例でも 1 次の解だけに
+  なる型を候補にして証明を探す（ソルバが表せない解を見落とすので、候補は数学的に確かめる。例: f(f(x)f(y)) = xy は 1/x も解）。
   効く類: f(x f(x) + xy) = f(x)² + x f(y)、f(f(x²) + xy) = f(x)² + x f(y) など（問題集の 93 問の解答が使う一般の命題）。
   規則に導かれる代入（3.1）と組み合わせて f(x f(y) + g(x)) = xy + h(x) の型にも効く（tactic_affine_xy_type, tactic_rule_guided_substitution）
 - 見つけた解に導かれる補題の推測（lemmas.rs の speculate_lemmas・try_lemma）: 枝と矛盾しない多項式の解の候補がすべて満たす性質
