@@ -48,15 +48,18 @@ def main():
             fp.write(json.dumps(results[pid], ensure_ascii=False) + "\n")
     sets = {}
     for r in results.values():
-        s = sets.setdefault(r["set"], {"total": 0, "solved": 0, "complete": 0, "special": 0, "special_exist": 0,
+        s = sets.setdefault(r["set"], {"total": 0, "solved": 0, "determined": 0, "complete": 0, "special": 0, "special_exist": 0,
                                        "partial": 0, "unresolved": 0, "crash": 0, "killed": 0, "skipped": 0,
                                        "classes": {}})
         s["total"] += 1
         s[r["status"]] = s.get(r["status"], 0) + 1
-        if r["status"] in ("complete", "special"):
+        # 解決 = 完全解決 + 特殊解決（解の集合を決めた special と、病的な解の存在を証明した special_exist）
+        if r["status"] in ("complete", "special", "special_exist"):
             s["solved"] += 1
+        if r["status"] in ("complete", "special"):
+            s["determined"] += 1
         s["classes"][r.get("class", "?")] = s["classes"].get(r.get("class", "?"), 0) + 1
-    ev = {"total": 0, "solved": 0, "complete": 0, "special": 0, "special_exist": 0}
+    ev = {"total": 0, "solved": 0, "determined": 0, "complete": 0, "special": 0, "special_exist": 0}
     for k in ("seen", "unseen"):
         if k in sets:
             for key in ev:
@@ -69,7 +72,8 @@ def main():
         tests = parse_tests(text)
     meta = dict(kv.split("=", 1) for kv in args.meta)
     summary = {"sets": sets, "tests": tests, "meta": meta,
-               "solved_ids": sorted(i for i, r in results.items() if r["status"] in ("complete", "special")),
+               "solved_ids": sorted(i for i, r in results.items() if r["status"] in ("complete", "special", "special_exist")),
+               "determined_ids": sorted(i for i, r in results.items() if r["status"] in ("complete", "special")),
                "complete_ids": sorted(i for i, r in results.items() if r["status"] == "complete")}
     with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as fp:
         json.dump(summary, fp, ensure_ascii=False, indent=1)

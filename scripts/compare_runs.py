@@ -12,7 +12,8 @@ import subprocess
 import sys
 import tempfile
 
-SOLVED = ("complete", "special")
+# 解決 = 完全解決 + 特殊解決（special と special_exist）
+SOLVED = ("complete", "special", "special_exist")
 NAMES = {"seen": "既見", "unseen": "初見", "challenge": "挑戦"}
 REPO = os.environ.get("FE_REPO", "mackerel38/fe-solver")
 

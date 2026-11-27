@@ -37,7 +37,8 @@ def main():
         latest = json.load(open(os.path.join(ROOT, "bench", "latest.json"), encoding="utf-8"))
         run_dir = os.path.join(ROOT, "bench", "runs", latest["run"])
     results = [json.loads(l) for l in open(os.path.join(run_dir, "results.jsonl"), encoding="utf-8")]
-    done = [r for r in results if r["status"] in ("complete", "special") and r.get("set") in ("seen", "unseen")]
+    # 解決（完全解決 + 特殊解決。特殊解決には病的な解の存在の証明 special_exist も含む）
+    done = [r for r in results if r["status"] in ("complete", "special", "special_exist") and r.get("set") in ("seen", "unseen")]
     problems = {p["id"]: p for p in json.load(open(os.path.join(ROOT, "data", "problems.json"), encoding="utf-8"))}
 
     out_dir = os.path.join(ROOT, "reports", "solved")

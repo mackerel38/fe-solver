@@ -70,8 +70,11 @@ def run_one(pid, timeout, proof_dir=None, mem_mb=0):
                 "time_ms": int((time.time() - t0) * 1000), "families": [], "found": []}
 
 
-# 解の集合を決めた状態（完全解決と、加法的関数を含む族での特殊解決）
-SOLVED = ("complete", "special")
+# 解決 = 完全解決 + 特殊解決。特殊解決は、加法的関数を含む族で解の集合を決めたもの（special）と、
+# 病的な解が存在することを証明したもの（special_exist）の両方（定義どおり）。
+SOLVED = ("complete", "special", "special_exist")
+# 解の集合まで決めた状態（完全解決と special）。改善の比較ではこちらも並べて見る
+DETERMINED = ("complete", "special")
 
 
 def classify(r):
@@ -194,15 +197,17 @@ def main():
     # 集計
     sets = {}
     for pid, r in results.items():
-        s = sets.setdefault(r["set"], {"total": 0, "solved": 0, "complete": 0, "special": 0, "special_exist": 0,
+        s = sets.setdefault(r["set"], {"total": 0, "solved": 0, "determined": 0, "complete": 0, "special": 0, "special_exist": 0,
                                        "partial": 0, "unresolved": 0, "crash": 0, "killed": 0, "classes": {}})
         s["total"] += 1
         s[r["status"]] = s.get(r["status"], 0) + 1
         if r["status"] in SOLVED:
             s["solved"] += 1
+        if r["status"] in DETERMINED:
+            s["determined"] += 1
         s["classes"][r["class"]] = s["classes"].get(r["class"], 0) + 1
     if "seen" in sets or "unseen" in sets:
-        ev = {"total": 0, "solved": 0, "complete": 0, "special": 0, "special_exist": 0}
+        ev = {"total": 0, "solved": 0, "determined": 0, "complete": 0, "special": 0, "special_exist": 0}
         for k in ("seen", "unseen"):
             if k in sets:
                 for key in ev:
@@ -254,8 +259,8 @@ def main():
             if "classes" in s:
                 cl = ", ".join(f"{a}:{b}" for a, b in sorted(s["classes"].items(), key=lambda t: -t[1]))
                 extra = f"  [{cl}]"
-            print(f"  {names[k]}: 解決 {s['solved']}/{s['total']}（完全解決 {s['complete']}, 特殊解決 {s['special']}; "
-                  f"病的な解の存在のみ {s['special_exist']}）{extra}")
+            print(f"  {names[k]}: 解決 {s['solved']}/{s['total']}（完全解決 {s['complete']}, 特殊解決 {s['special'] + s['special_exist']}"
+                  f" = 解の集合を決定 {s['special']} + 病的な解の存在の証明 {s['special_exist']}; 解の集合まで決めたもの {s['determined']}）{extra}")
     if diff.get("previous_run"):
         print(f"  前回 ({diff['previous_run']}) との差分: +{len(diff['gained'])} {diff['gained'][:20]}  "
               f"-{len(diff['lost'])} {diff['lost'][:20]}")
