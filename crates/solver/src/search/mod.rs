@@ -157,6 +157,11 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            // 既知の型（f(xy + g(x)) = x f(y) + h(x) なら f は 1 次）
+            self.apply_known_types(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             // 単射性がわかっていれば、場合分けより先に当てはめる（選言の中も。安い）
             if st.inj.is_some() {
                 self.apply_injectivity(st)?;

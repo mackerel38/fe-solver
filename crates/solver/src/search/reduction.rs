@@ -86,4 +86,26 @@ impl Searcher {
         Ok(false)
     }
 
+
+    /// 既知の型の当てはめ: 2 変数の単位等式が f(a·xy + g(x)) = a·x·f(y) + h(x) の型なら、検証核の規則 AffineXY で
+    /// f が 1 次（f(x) = (f(1) − f(0))x + f(0)）であることを得る。形が合わなければ検証核が拒否するだけ（安い）。
+    pub(crate) fn apply_known_types(&mut self, st: &mut BState) -> Res<()> {
+        let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+        for u in units {
+            if self.closed(st) {
+                return Ok(());
+            }
+            let key = format!("affxy|{:?}", u);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            if let Ok(r) = self.e.k.affine_xy(st.b, u) {
+                self.bump("affine_xy");
+                self.e.add_fact(st, r)?;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
 }

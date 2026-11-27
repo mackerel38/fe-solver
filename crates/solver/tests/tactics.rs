@@ -234,3 +234,22 @@ fn tactic_solution_guided_lemmas() {
     assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
     check_families(eq, &l, &r, &out);
 }
+
+/// 既知の型の当てはめ（検証核の規則 AffineXY）: f(a·xy + g(x)) = a·x·f(y) + h(x)（x と y の役割が逆でもよい）なら f は 1 次。
+/// 残りは 1 次関数の係数の決定。問題集にない係数・形の方程式
+#[test]
+fn tactic_affine_xy_type() {
+    for (eq, want) in [
+        ("f(x*f(x) + 3*x*y) = x^2 + 3*x*f(y)", vec!["-x", "x"]),
+        ("f(x*y + y*f(y)) = y*f(x) + f(y)^2", vec!["-x + 1", "x*z"]),
+    ] {
+        let (l, r, out) = run(eq, 30);
+        assert_eq!(out.status, "complete", "{}", eq);
+        let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+        got.sort();
+        let mut want: Vec<String> = want.into_iter().map(String::from).collect();
+        want.sort();
+        assert_eq!(got, want, "{}: 解の集合 {:?}", eq, got);
+        check_families(eq, &l, &r, &out);
+    }
+}
