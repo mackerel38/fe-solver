@@ -786,4 +786,11 @@ fn affine_xy_rule() {
     // 2 つの f(…y…) をもつ: f(xy + x) = x f(y) + f(y)
     let mut k8 = Kernel::new(f(x().mul(&y()).add(&x())), x().mul(&f(y())).add(&f(y()))).unwrap();
     want(&mut k8, false, "h が f(y) を含む");
+    // x ≠ 0 でだけ成り立つ形「x = 0 ∨ f(xy + x²) − x f(y) − x = 0」も受け付ける。条件が y = 0 や x − 1 = 0 なら拒否
+    let body = f(x().mul(&y()).add(&x().pow(2))).sub(&x().mul(&f(y()))).sub(&x());
+    for (side, ok) in [(x(), true), (y(), false), (x().sub(&c(1)), false)] {
+        let mut k9 = Kernel::new(f(x()), f(x())).unwrap();
+        let (b0, h0, _, _, _) = k9.split_em(ROOT, cl(2, vec![Lit::eq(side.clone()), Lit::eq(body.clone())])).unwrap();
+        assert_eq!(k9.affine_xy(b0, h0).is_ok(), ok, "条件 {:?}", side);
+    }
 }

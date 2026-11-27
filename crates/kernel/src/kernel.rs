@@ -770,14 +770,27 @@ impl Kernel {
     ///      αc = β + d、さらに y = k（k ≠ −c のとき）または y = −c（k = −c のとき）を入れて大きい x をとると
     ///      f(k) = αk + β。よって f はすべての点で 1 次。
     ///  1 次関数 f(x) = αx + β では β = f(0)、α = f(1) − f(0)。
+    ///  前提は「u = 0 ∨ （上の形）」（u ≠ 0 でだけ成り立つ）でもよい: 上の証明は (1)(2)(3) とも u ≠ 0 での等式しか使わない
+    ///  （(1) の結論 f(xc) = f(0) + xd は x = 0 で自明、(2) は x = −1 と x ≠ 0、(3) は y を固定して x ≠ 0 を動かすだけ）。
     pub fn affine_xy(&mut self, target: BranchId, premise: Fact) -> R<Fact> {
         self.check_branch(target)?;
         let c = self.premise(premise, target)?.clone();
-        if c.lits().len() != 1 || c.lits()[0].rel() != Rel::Eq || c.nvars() != 2 {
-            return Err("AffineXY の前提は 2 変数の単位等式".into());
+        if c.nvars() != 2 || c.lits().iter().any(|l| l.rel() != Rel::Eq) {
+            return Err("AffineXY の前提は 2 変数の等式（と u = 0）".into());
         }
-        if !Self::is_affine_xy_form(c.lits()[0].poly()) {
-            return Err("f(a·xy + g(x)) − a·x·f(y) − h(x) の形でない".into());
+        let ok = match c.lits().len() {
+            1 => Self::is_affine_xy_form(c.lits()[0].poly()).is_some(),
+            2 => (0..2).any(|i| {
+                let side = &c.lits()[1 - i];
+                match Self::is_affine_xy_form(c.lits()[i].poly()) {
+                    Some(u) => *side == Lit::eq(Poly::var(u)),
+                    None => false,
+                }
+            }),
+            _ => false,
+        };
+        if !ok {
+            return Err("f(a·xy + g(x)) − a·x·f(y) − h(x) の形（と x = 0）でない".into());
         }
         let x = Poly::var(0);
         let f0 = Poly::f(Poly::zero());
@@ -787,8 +800,8 @@ impl Kernel {
         Ok(self.push(out, target, Rule::AffineXY { premise }))
     }
 
-    /// p が λ(f(a·u·v + G) − a·u·f(v) − H)（G, H は v を含まない）の形か
-    fn is_affine_xy_form(p: &Poly) -> bool {
+    /// p が λ(f(a·u·v + G) − a·u·f(v) − H)（G, H は v を含まない）の形なら u を返す
+    fn is_affine_xy_form(p: &Poly) -> Option<u32> {
         for (u, v) in [(0u32, 1u32), (1, 0)] {
             let uv = Poly::var(u).mul(&Poly::var(v));
             for (m, lam) in p.terms() {
@@ -813,10 +826,10 @@ impl Kernel {
                 if rest.vars().contains(&v) {
                     continue;
                 }
-                return true;
+                return Some(u);
             }
         }
-        false
+        None
     }
 
     /// 規則 CauchyBounded（コーシーの方程式の有界な解）:
