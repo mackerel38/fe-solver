@@ -484,7 +484,8 @@ impl Searcher {
                 }
                 let arg = x().sub(&bb).mul(&inv_a);
                 let w = u.subst_vars(&[arg]);
-                if poly_size(&w) <= 24 && !out.contains(&w) {
+                // 大きさの上限 40（f(x − f(0)²) + f(0)² が 30。以前の 24 ではこの証人が使われなかった）
+                if poly_size(&w) <= 40 && !out.contains(&w) {
                     out.push(w);
                 }
             }

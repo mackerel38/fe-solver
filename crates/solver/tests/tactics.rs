@@ -336,3 +336,17 @@ fn tactic_self_composition() {
     let used = out.stats.iter().find(|(k, _)| k == "self_compose").map_or(0, |(_, v)| *v);
     assert!(used > 0, "{}: 規則の自己合成を使っていない", eq);
 }
+
+/// 全射性の証人（大きめの証人）: P(x, 0) の f(f(x) + c·f(0)²) = x + c·f(0)² から証人 S(t) = f(t − c·f(0)²) + c·f(0)²
+/// （f(S(t)) = t）を作り、P(x, S(y)) で f(x) を外す。証人の式の大きさの上限が小さいと使われない（大きさ 30 前後）。
+/// 問題集にない係数の式で確かめる
+#[test]
+fn tactic_surjectivity_witness_large() {
+    for eq in ["f(f(x) + 2*f(y)^2) = x + 2*f(y)^2", "f(2*f(x) + f(y)^2) = 2*x + f(y)^2"] {
+        let (l, r, out) = run(eq, 30);
+        assert_eq!(out.status, "complete", "{}", eq);
+        let got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+        assert_eq!(got, vec!["x".to_string()], "{}: 解の集合 {:?}", eq, got);
+        check_families(eq, &l, &r, &out);
+    }
+}
