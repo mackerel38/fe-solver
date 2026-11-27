@@ -112,6 +112,93 @@ impl Searcher {
                 return Ok(());
             }
         }
+        self.apply_additive_square(st)?;
+        Ok(())
+    }
+
+    /// 既知の型「0 以上で加法的で f(x²) = x·f(x) なら 1 次」（検証核の規則 AdditiveSquare）の当てはめ:
+    /// 1 変数の単位等式 f(x²) − x·f(x) = 0（P2）があるとき、2 変数の単位等式 U を (x, y), (x², y²), (x, y²), (x², y) と
+    /// x, y を入れ替えたもので例化し、P2(x)・P2(y) の定数倍を差し引くと f(x² + y²) − f(x²) − f(y²) になれば、それを前提にする。
+    /// 効く類: f(x + y) = f(x) + f(y)、f(x² + y) = x·f(x) + f(y)、f(x² + y²) = x·f(x) + y·f(y) などと f(x²) = x·f(x)。
+    pub(crate) fn apply_additive_square(&mut self, st: &mut BState) -> Res<()> {
+        let xv = x();
+        let yv = y();
+        let fx = Poly::f(xv.clone());
+        let p2_want = Poly::f(xv.mul(&xv)).sub(&xv.mul(&fx));
+        let p2 = match st.units.iter().copied().find(|&f| self.e.nvars(f) == 1 && self.e.poly0(f).monic() == p2_want.monic()) {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+        let x2 = xv.mul(&xv);
+        let y2 = yv.mul(&yv);
+        let target = Poly::f(x2.add(&y2)).sub(&Poly::f(x2.clone())).sub(&Poly::f(y2.clone()));
+        let fx2 = Atom::F(std::rc::Rc::new(x2.clone()));
+        let fy2 = Atom::F(std::rc::Rc::new(y2.clone()));
+        let fs = Atom::F(std::rc::Rc::new(x2.add(&y2)));
+        let units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+        let substs: Vec<Vec<Poly>> = vec![
+            vec![xv.clone(), yv.clone()],
+            vec![x2.clone(), y2.clone()],
+            vec![xv.clone(), y2.clone()],
+            vec![x2.clone(), yv.clone()],
+            vec![yv.clone(), xv.clone()],
+            vec![y2.clone(), x2.clone()],
+            vec![yv.clone(), x2.clone()],
+            vec![y2.clone(), xv.clone()],
+        ];
+        for u in units {
+            if self.closed(st) {
+                return Ok(());
+            }
+            let key = format!("addsq|{:?}|{:?}", u, p2);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let p = self.e.poly0(u);
+            for s in &substs {
+                let ps = p.subst_vars(s);
+                let lam = match coeff_of_atom(&ps, &fs) {
+                    Some(l) => l,
+                    None => continue,
+                };
+                // D = ps/λ − target = α·P2(x) + β·P2(y) か
+                let d = ps.scale(&(Q::one() / &lam)).sub(&target);
+                let alpha = coeff_of_atom(&d, &fx2).unwrap_or_else(Q::zero);
+                let beta = coeff_of_atom(&d, &fy2).unwrap_or_else(Q::zero);
+                let p2x = p2_want.clone();
+                let p2y = p2_want.subst_vars(&[yv.clone()]);
+                if d != p2x.scale(&alpha).add(&p2y.scale(&beta)) {
+                    continue;
+                }
+                let b = st.b;
+                let inst = if *s == vec![xv.clone(), yv.clone()] { u } else { self.e.k.instantiate(b, u, s.clone(), 2)? };
+                let ix = self.e.k.instantiate(b, p2, vec![xv.clone()], 2)?;
+                let iy = self.e.k.instantiate(b, p2, vec![yv.clone()], 2)?;
+                let lam_i = match scale_ratio(&self.e.poly0(inst), &ps) {
+                    Some(k) => k,
+                    None => continue,
+                };
+                // 例化した事実は保存のときに正規化されるので、倍率はそれぞれ求める
+                let (mux, muy) = match (scale_ratio(&self.e.poly0(ix), &p2x), scale_ratio(&self.e.poly0(iy), &p2y)) {
+                    (Some(a), Some(b)) => (a, b),
+                    _ => continue,
+                };
+                let items = vec![
+                    (Poly::constant(Q::one() / (&lam_i * &lam)), inst, 0),
+                    (Poly::constant(-(&alpha) / &mux), ix, 0),
+                    (Poly::constant(-(&beta) / &muy), iy, 0),
+                ];
+                let add = self.e.k.lincomb(b, 2, items)?;
+                match self.e.k.additive_square(b, add, p2) {
+                    Ok(r) => {
+                        self.bump("additive_square");
+                        self.e.add_fact(st, r)?;
+                        return Ok(());
+                    }
+                    Err(_) => continue,
+                }
+            }
+        }
         Ok(())
     }
 
