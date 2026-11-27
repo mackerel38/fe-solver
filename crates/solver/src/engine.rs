@@ -22,6 +22,8 @@ pub struct RwRule {
     pub rhs: Poly,
     /// 照合用に変数を移した左辺（matching::shift_atom）
     pub pat: Atom,
+    /// 左辺が変数を含まない（照合は左辺との一致の判定と同じ）
+    pub closed: bool,
 }
 
 /// 条件付きの書き換え規則: 節「条件リテラル ∨ lhs − rhs = 0」で、条件リテラルの否定が示せる場所でだけ使う
@@ -209,7 +211,17 @@ impl Engine {
                     continue;
                 }
             }
-            if let Some(s) = match_atom_shifted(&r.pat, r.nvars, &cur_atom) {
+            // 左辺が変数を含まない規則は、左辺との一致だけを見る（照合の結果と同じ）
+            let m = if r.closed {
+                if r.lhs == cur_atom {
+                    Some(vec![Poly::zero(); r.nvars as usize])
+                } else {
+                    None
+                }
+            } else {
+                match_atom_shifted(&r.pat, r.nvars, &cur_atom)
+            };
+            if let Some(s) = m {
                 let rhs = r.rhs.subst_vars(&s);
                 if all_atoms_less(&rhs, &cur_atom) {
                     applied = Some((ri, s, rhs));
@@ -753,7 +765,8 @@ impl Engine {
         let rest = p.sub(&Poly::from_atom(a.clone()).scale(&coef));
         let rhs = rest.scale(&(-Q::one() / coef));
         let pat = shift_atom(&a, c.nvars());
-        Some(RwRule { fact: f, nvars: c.nvars(), lhs: a, rhs, pat })
+        let closed = !a.has_var();
+        Some(RwRule { fact: f, nvars: c.nvars(), lhs: a, rhs, pat, closed })
     }
 
     /// 規則を加え、既存の単位等式・規則を相互簡約する
