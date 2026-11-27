@@ -28,6 +28,7 @@
 | SquareRange | 変数が 2 乗でだけ現れる事実を t ≥ 0 の事実にする | square_range_rule |
 | InvAxiom / Weaken | u = 0 ∨ u·inv(u) = 1、A から A ∨ B | inv_axiom_and_weaken |
 | CauchyBounded | 加法的で片側に有界なら 1 次関数 | cauchy_bounded_rule |
+| AffineXY | 既知の型 f(a·xy + g(x)) = a·x·f(y) + h(x)（g, h は y を含まない。x と y の役割が逆でもよい）なら f(x) = (f(1) − f(0))x + f(0)（D35） | affine_xy_rule |
 | （解の族の検証）verify_solution / verify_piecewise / verify_additive(_kind) / verify_arbitrary | 事実は作らず、解の族の値（検証済みの印）だけを作る。詳細は 2 節 | 2 節の各テスト |
 | ImportLemma | 別に解いた方程式（補題）の解の集合を取り込む | import_lemma_rule |
 | 場合分け | 変数を共有しない選言の分割（SplitComponents）、排中律（SplitExcludedMiddle）、Merge、AbandonSplit | split_components_rejects_pointwise_disjunction, merge_rules, abandon_split_rule など |
@@ -63,6 +64,7 @@
 | 分数の代入 | v := (v − r)/(c·w) など。逆数の公理で w ≠ 0 の場合、排中律と合同性で w = 0 の場合を作り、導出原理で ∀x,y の等式にする | f(x² + c·xy) = f(x)² + f(c·xy) など（y := y/x で帰着） | tactic_fraction_substitution |
 | 分母が一般の式の分数の代入 | f の引数が変数 v について 1 次で係数が他方の変数 w の式 a(w)（f(y) + y、f(x) − x など）なら、v := (v − r)/a(w)、v := −r/a(w)、2 つの引数の差についても同様。t = inv(a(w)) を含む式を a(w)·t = 1 で簡約し（主項の書き換え）、逆数の公理・合同性・一次結合で「a(w) = 0 ∨ E' = 0」（InvAxiom, Congruence, LinComb）。第 0 ラウンドから | f(xf(y) + xy) = xf(y) + xy（y ごとに x := x/(f(y) + y)）、f(x² + yf(x)) = f(x)² + f(xy)（y := x²/(x − f(x)) で各点の選言 f(x) ∈ {0, x}） | tactic_general_denominator_fraction |
 | 入れ子の引数を定数にする分数の代入 | f の引数（入れ子の中も含む）が c·xy なら v := K/(c·w)（K = 1, −1, この枝で f の値がわかる閉じた点）。w ≠ 0 の場合の合同性を入れ子の内側から作り（inv_items）、f の外に残る 1/w は両辺に w^k（k ≤ 2）を掛けて消す（逆数の公理で w^k·(1/w)^k = 1、LinComb）。w = 0 の場合は排中律で別に示す | P(x, 1/x)、f(s) = 0 の s で P(x, s/x)（f(x + f(xy)) = f(x) + y·f(x) など） | tactic_inner_constant_fraction |
+| 規則に導かれる代入 | 1 変数の規則 f(T(v)) → …（T は f を含む）があれば、f(v) を（入れ子の中も含めて）含む 2 変数の事実で v := T(v)（Instantiate、追加時に規則で書き換わる） | P(1, y) の f(f(y) + c) = y + d から y := f(y) + c。f(x f(y) + g(x)) = xy + h(x) を既知の型 f(xy + …) = x f(y) + … にする | tactic_rule_guided_substitution |
 | 全射性の証人 | f(u(x)) = a·x + b なら v := u((v − b)/a) で f(v) を v にする。係数 a は 0 でない有理数か、逆数のわかる閉じた式（f(a) ≠ 0 の f(a) など）。2 変数の事実に加えて、x が f(x) を通してだけ現れる 1 変数の事実にも代入する | f(f(x) + …) 型、f(xf(x) + xf(y)) = f(x)² + yf(x)（f(a) ≠ 0 の点で y について 1 次） | tactic_surjectivity_chain |
 | f の外の部分を 0 にする代入 | v を引数に含む f を除いた部分を c₁·v + c₀ とみて、c₁ が定数でなく c₀ が c₁ で割り切れるなら v := −c₀/c₁ | f(x)² + y·f(x) = f(x)(y + f(x)) で y := −f(x) | tactic_surjectivity_chain |
 | 1 変数の事実の自己代入 | −x, 0, 1, f(x), ±x², −1, x ± 1 | 1 変数の事実の整理 | 全体の計測 |
@@ -98,6 +100,14 @@
 
 ### 3.5 帰着
 - 導いた 2 変数の等式を新しい方程式として別に解き、完全解決すれば補題として取り込む（ImportLemma）。第 4 ラウンドから・1 回・最大 3 秒
+- 既知の型の当てはめ（reduction.rs の apply_known_types）: 2 変数の単位等式が f(a·xy + g(x)) = a·x·f(y) + h(x) の型なら
+  検証核の規則 AffineXY で f は 1 次。場合分けより先に毎ラウンド（形が合わなければ検証核が拒否するだけ）。
+  効く類: f(x f(x) + xy) = f(x)² + x f(y)、f(f(x²) + xy) = f(x)² + x f(y) など（問題集の 93 問の解答が使う一般の命題）。
+  規則に導かれる代入（3.1）と組み合わせて f(x f(y) + g(x)) = xy + h(x) の型にも効く（tactic_affine_xy_type, tactic_rule_guided_substitution）
+- 見つけた解に導かれる補題の推測（lemmas.rs の speculate_lemmas・try_lemma）: 枝と矛盾しない多項式の解の候補がすべて満たす性質
+  （f(0) = 0、奇関数、f(f(x)) = x、f(x + 1) = f(x) + c、f(1) = c、偶関数、f(f(x)) = f(x)）を、否定側を限られた時間で閉じられれば
+  補題にする（排中律・AbandonSplit）。補題の側は深さを増やさず同じラウンドから続ける。探索の予定の最後の段階（幅 2 以上）だけで行う
+  （tactic_solution_guided_lemmas）
 
 ### 3.6 解の形の確定
 - f(x) = g(x) の規則が得られたら、パラメータの自己整合性を確かめて mark_solution
