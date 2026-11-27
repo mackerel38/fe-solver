@@ -207,3 +207,17 @@ fn tactic_shift_difference() {
     assert_eq!(got, vec!["x".to_string()], "{}: 解の集合 {:?}", eq, got);
     check_families(eq, &l, &r, &out);
 }
+
+/// 単射性の選言への当てはめ: 単射性（f の値で決まる量の補題から第 0 ラウンドで得る）で、選言や場合分け前の因数分解の
+/// リテラル f(s) − f(t) = 0 を s − t = 0 にする（f(x)² = f(−x)² の因数 f(x) − f(−x) = 0 が x = 0 になるなど）。
+/// f(c·f(x) + f(y)²) = c·x + f(y²) の型
+#[test]
+fn tactic_injectivity_in_disjunction() {
+    let eq = "f(2*f(x) + f(y)^2) = 2*x + f(y^2)";
+    let (l, r, out) = run(eq, 90);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    got.sort();
+    assert_eq!(got, vec!["-x".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+}
