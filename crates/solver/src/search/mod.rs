@@ -254,6 +254,10 @@ impl Searcher {
                 if self.closed(st) {
                     return Ok(());
                 }
+                self.shift_differences(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
                 self.value_lemmas(st)?;
                 if self.closed(st) {
                     return Ok(());
