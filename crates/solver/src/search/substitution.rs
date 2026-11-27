@@ -213,6 +213,40 @@ impl Searcher {
                     }
                 }
             }
+            // 規則に導かれる代入: 1 変数の規則 f(T(x)) → … があれば、f(v) を含む事実で v := T(v) とし、f(T(v)) を書き換える
+            // （例: f(f(y) + c) = y + d があれば y := f(y) + c。f(x f(y) + g(x)) = xy + h(x) を f(xy + …) = x f(y) + … にする）
+            if round >= 1 {
+                let mut ts: Vec<Poly> = Vec::new();
+                for r in &st.rules {
+                    if r.nvars != 1 {
+                        continue;
+                    }
+                    if let Atom::F(t) = &r.lhs {
+                        let t = (**t).clone();
+                        if t.vars().contains(&0) && t != x() && t.has_f() && poly_size(&t) <= 16 && !ts.contains(&t) {
+                            ts.push(t);
+                        }
+                    }
+                }
+                ts.truncate(self.scaled(3));
+                let pg = self.e.poly0(g);
+                for t in ts {
+                    for v in 0..2u32 {
+                        if self.closed(st) || !st.units.contains(&g) {
+                            break;
+                        }
+                        // f(v) が（入れ子の中も含めて）現れるときだけ
+                        if !f_atoms_with_vars(&pg).iter().any(|u| *u == Poly::var(v)) {
+                            continue;
+                        }
+                        let mut sb = vec![x(), y()];
+                        sb[v as usize] = t.subst_vars(&[Poly::var(v)]);
+                        if self.try_instance(st, g, sb, 2)? {
+                            self.bump("rule_subst");
+                        }
+                    }
+                }
+            }
             // 打ち消しの代入
             let p = self.e.poly0(g);
             let invs = st.invs.clone();
