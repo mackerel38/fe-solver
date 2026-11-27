@@ -253,3 +253,16 @@ fn tactic_affine_xy_type() {
         check_families(eq, &l, &r, &out);
     }
 }
+
+/// 規則に導かれる代入: 1 変数の規則 f(T(y)) → …（P(1, y) からの f(f(y) + c) = y + d など）があれば、f(v) を含む事実で
+/// v := T(v) とする。f(c·x·f(y) + g(x)) = c·xy + h(x) の型が f(xy + …) = x f(y) + … になり、既知の型（AffineXY）に帰着する
+#[test]
+fn tactic_rule_guided_substitution() {
+    let eq = "f(2*x*f(y) + x) = 2*x*y + f(x)";
+    let (l, r, out) = run(eq, 30);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    got.sort();
+    assert_eq!(got, vec!["-x".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+}
