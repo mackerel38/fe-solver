@@ -321,6 +321,45 @@ impl Searcher {
                 pool.push(x().sub(&Poly::one()));
             }
             let all_ones: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 1).collect();
+            // 右辺を 0 にする代入: 1 変数の事実から、x を引数に含む最大の f の項を除いた残りを単項式の因子で割り、
+            // x について 1 次 x·a + c（a は有理数、c は閉じた式）なら x := −c/a（例: f(x f(x)) = f(x)(x + f(0)) で x := −f(0)）
+            for f in all_ones.iter().copied().take(self.scaled(12)) {
+                let p = self.e.poly0(f);
+                let big = p
+                    .top_atoms()
+                    .into_iter()
+                    .filter(|a| matches!(a, Atom::F(u) if u.vars().contains(&0) && **u != x()))
+                    .max_by_key(|a| poly_size(&Poly::from_atom(a.clone())));
+                let big = match big {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let (rest, _) = replace_atom(&p, &big, &Poly::zero());
+                if rest.is_zero() {
+                    continue;
+                }
+                let content = monomial_content(&rest);
+                let r = div_mono(&rest, &content);
+                let cs = coeffs_in(&r, &Atom::Var(0));
+                if cs.keys().max() != Some(&1) || r.terms().iter().any(|(m, _)| m.factors().iter().any(|(a, _)| *a != Atom::Var(0) && Poly::from_atom(a.clone()).vars().contains(&0))) {
+                    continue;
+                }
+                let a1 = match cs.get(&1).and_then(|c| c.as_const()) {
+                    Some(a) if !a.is_zero() => a,
+                    _ => continue,
+                };
+                let c0 = cs.get(&0).cloned().unwrap_or_else(Poly::zero);
+                if c0.is_zero() || c0.has_var() {
+                    continue;
+                }
+                let root = c0.neg().scale(&(Q::one() / a1));
+                if self.closed(st) {
+                    return Ok(());
+                }
+                if self.try_instance(st, f, vec![root], 0)? {
+                    self.bump("root_subst");
+                }
+            }
             for f in all_ones {
                 let p = self.e.poly0(f);
                 for sb in affine_inv_substs(&p, &st.invs) {
