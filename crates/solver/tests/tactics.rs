@@ -182,3 +182,16 @@ fn tactic_arbitrary_family() {
         check_families(eq, &l, &r, &out);
     }
 }
+
+/// 零点の補題を早めに試し、選言の中の f(s) = 0 にも当てはめる: 引数を等しくする代入で「f(x) = 0 ∨ f(x − f(x)) = 0」を得て、
+/// 「f(t) = 0 ⇒ t = 0」で「x = 0 ∨ x − f(x) = 0」にする。f(x·f(x) + c·xy) = f(x²) + c·f(x)f(y) の型
+#[test]
+fn tactic_zero_lemma_in_disjunction() {
+    let eq = "f(x*f(x) + 2*x*y) = f(x^2) + 2*f(x)*f(y)";
+    let (l, r, out) = run(eq, 60);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    got.sort();
+    assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+}
