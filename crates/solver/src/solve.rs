@@ -221,16 +221,18 @@ pub fn report(out: &SolveOutput) -> String {
             } else if let Some(fam) = &out.arb_found {
                 s.push_str(&fe_render::render_arb_exist(k, fam));
             }
-            if !out.found.is_empty() || !out.pw_found.is_empty() {
+            // 病的な解の族（上の【病的な解の存在】）に含まれるものは省く
+            let in_add = |f: &Family| out.add_found.iter().any(|a| fe_render::subsumed_by_additive(f, a));
+            let in_arb = |f: &Family| out.add_found.is_none() && out.arb_found.iter().any(|a| fe_render::family_in_arb(f, a));
+            let pw_in_arb = |f: &PwFamily| out.add_found.is_none() && out.arb_found.iter().any(|a| fe_render::pw_in_arb(f, a));
+            let fams: Vec<&Family> = fe_render::display_families(&out.found).into_iter().filter(|f| !in_add(f) && !in_arb(f)).collect();
+            let pws: Vec<&PwFamily> = out.pw_found.iter().filter(|f| !pw_in_arb(f)).collect();
+            if !fams.is_empty() || !pws.is_empty() {
                 s.push_str("見つけた解:\n");
-                for f in fe_render::display_families(&out.found) {
-                    // 加法的関数の族（上の【病的な解の存在】）に含まれるものは省く
-                    if out.add_found.iter().any(|a| fe_render::subsumed_by_additive(f, a)) {
-                        continue;
-                    }
+                for f in fams {
                     s.push_str(&format!("  {}\n", fe_render::fmt_family(f)));
                 }
-                for f in &out.pw_found {
+                for f in pws {
                     s.push_str(&format!("  {}\n", fe_render::fmt_pw(f)));
                 }
             }

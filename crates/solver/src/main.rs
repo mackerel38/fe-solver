@@ -136,9 +136,16 @@ fn real_main() -> i32 {
                     fe_render::display_families(&out.found)
                         .into_iter()
                         .filter(|f| !out.add_found.iter().any(|a| fe_render::subsumed_by_additive(f, a)))
+                        // 任意の区間をもつ族に含まれるものも省く
+                        .filter(|f| out.add_found.is_some() || !out.arb_found.iter().any(|a| fe_render::family_in_arb(f, a)))
                         .map(|f| json_str(&fe_render::fmt_family(f))),
                 );
-                found.extend(out.pw_found.iter().map(|f| json_str(&fe_render::fmt_pw(f))));
+                found.extend(
+                    out.pw_found
+                        .iter()
+                        .filter(|f| out.add_found.is_some() || !out.arb_found.iter().any(|a| fe_render::pw_in_arb(f, a)))
+                        .map(|f| json_str(&fe_render::fmt_pw(f))),
+                );
                 let reasons: Vec<String> = out.reasons.iter().map(|r| json_str(r)).collect();
                 let stats: Vec<String> = out.stats.iter().map(|(k, v)| format!("{}:{}", json_str(k), v)).collect();
                 println!(

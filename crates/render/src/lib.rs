@@ -650,6 +650,83 @@ pub fn display_families(fams: &[fe_kernel::Family]) -> Vec<&fe_kernel::Family> {
 
 /// 多項式の族 g'(x; p̄) のすべての関数が加法的な族 {A + t} に含まれるか（表示で重複を省くため）。
 /// t = 0 なら g' が x について斉次 1 次（ax の形）、t が単独のパラメータ c なら g' が x の 1 次以下なら含まれる。
+/// 区間 (lo, hi) 上の値の関数（x の多項式、次数 1 以下）が任意の区間の制約を満たすか（判定できなければ false）
+fn piece_within(g: &Poly, pc: &fe_kernel::ArbPiece, lo: &Option<Q>, hi: &Option<Q>) -> bool {
+    use fe_kernel::ArbPiece;
+    use num_traits::{Signed, Zero};
+    match pc {
+        ArbPiece::Fixed(h) => h == g,
+        ArbPiece::Free => true,
+        ArbPiece::Choice(a, b) => a == g || b == g,
+        ArbPiece::NonNeg | ArbPiece::NonPos => {
+            // g = a·x + c（パラメータなし）だけを扱う
+            let mut a = Q::zero();
+            let mut c = Q::zero();
+            for (m, k) in g.terms() {
+                if m.is_one() {
+                    c = k.clone();
+                } else if m.factors() == [(Atom::Var(0), 1)] {
+                    a = k.clone();
+                } else {
+                    return false;
+                }
+            }
+            let sgn = if matches!(pc, ArbPiece::NonNeg) { Q::one() } else { -Q::one() };
+            // 区間の両端（無限なら傾きの符号）で s·g ≥ 0 なら区間全体で s·g ≥ 0（1 次式なので）
+            let ok_end = |e: &Option<Q>, toward_minus: bool| -> bool {
+                match e {
+                    Some(t) => !((&a * t + &c) * &sgn).is_negative(),
+                    None => {
+                        let slope = if toward_minus { -a.clone() } else { a.clone() } * &sgn;
+                        slope.is_positive() || (slope.is_zero() && !(&c * &sgn).is_negative())
+                    }
+                }
+            };
+            ok_end(lo, true) && ok_end(hi, false)
+        }
+    }
+}
+
+/// 多項式の族（パラメータなし）が任意の区間をもつ族に含まれるか（表示で省くため）
+pub fn family_in_arb(fam: &fe_kernel::Family, arb: &fe_kernel::ArbFamily) -> bool {
+    if !fam.params().is_empty() {
+        return false;
+    }
+    let g = fam.template();
+    arb.pieces().iter().enumerate().all(|(i, pc)| {
+        let (lo, hi) = arb.interval(i);
+        if i % 2 == 1 {
+            let b = Poly::constant(lo.clone().unwrap());
+            match pc {
+                fe_kernel::ArbPiece::Fixed(h) => h.subst_vars(&[b.clone()]) == g.subst_vars(&[b]),
+                _ => false,
+            }
+        } else {
+            piece_within(g, pc, &lo, &hi)
+        }
+    })
+}
+
+/// 区分的な族が任意の区間をもつ族に含まれるか（区切り点が同じときだけ判定する）
+pub fn pw_in_arb(pw: &fe_kernel::PwFamily, arb: &fe_kernel::ArbFamily) -> bool {
+    if pw.breaks() != arb.breaks() {
+        return false;
+    }
+    arb.pieces().iter().enumerate().all(|(i, pc)| {
+        let (lo, hi) = arb.interval(i);
+        let g = &pw.pieces()[i];
+        if i % 2 == 1 {
+            let b = Poly::constant(lo.clone().unwrap());
+            match pc {
+                fe_kernel::ArbPiece::Fixed(h) => h.subst_vars(&[b.clone()]) == g.subst_vars(&[b]),
+                _ => false,
+            }
+        } else {
+            piece_within(g, pc, &lo, &hi)
+        }
+    })
+}
+
 pub fn subsumed_by_additive(fam: &fe_kernel::Family, add: &fe_kernel::AddFamily) -> bool {
     let xdeg = |m: &fe_kernel::Mono| m.factors().iter().filter(|(a, _)| *a == Atom::Var(0)).map(|(_, e)| *e).sum::<u32>();
     let terms = fam.template().terms();
@@ -806,7 +883,8 @@ pub fn fmt_arb(fam: &fe_kernel::ArbFamily) -> String {
         if is_fixed {
             fixed.push(format!("{}（{}）", d, cond));
         } else {
-            free.push(format!("{} では{}", cond, d));
+            let sp = if d.chars().next().map_or(false, |c| c.is_ascii_alphanumeric()) { " " } else { "" };
+            free.push(format!("{} では{}{}", cond, sp, d));
         }
     }
     let _ = br;
