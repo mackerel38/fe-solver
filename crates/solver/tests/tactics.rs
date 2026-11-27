@@ -126,3 +126,18 @@ fn tactic_discharge_conditions() {
         check_families(eq, &l, &r, &out);
     }
 }
+
+/// 零点の補題の連鎖: 「f(k) = 0 となる k ≠ 0 があれば P(k, y) から f(k·y) が定数 → y := y/k で f は定数」で否定側を閉じ、
+/// 「f(t) = 0 ⇒ t = 0」のもとで引数を等しくする代入（分母が式の分数の代入を含む）から f(x) = x。
+/// f(c·x² + x·f(y)) = c·f(x)² + f(xy)、f(f(x)² + c·y·f(x)) = f(x²) + f(c·xy) の型
+#[test]
+fn tactic_zero_lemma_chain() {
+    for eq in ["f(2*x^2 + x*f(y)) = 2*f(x)^2 + f(x*y)", "f(f(x)^2 + 2*y*f(x)) = f(x^2) + f(2*x*y)"] {
+        let (l, r, out) = run(eq, 60);
+        assert_eq!(out.status, "complete", "{}", eq);
+        let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+        got.sort();
+        assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
+        check_families(eq, &l, &r, &out);
+    }
+}

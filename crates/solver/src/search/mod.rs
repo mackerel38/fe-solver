@@ -150,6 +150,10 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            self.affine_inverse_ones(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             if depth < self.max_depth {
                 if self.try_split(st, depth)? {
                     return Ok(());
