@@ -61,6 +61,8 @@ pub struct BState {
     pub tried: HashSet<String>,
     /// 条件つきの単射性「∀x,y. Q(x, y) ∨ f(y) − f(x) ≠ 0」の節
     pub cinj: Vec<Fact>,
+    /// 探索のラウンドをどこから始めるか（補題を加えただけの子の枝は、親のラウンドから続ける）
+    pub start_round: usize,
 }
 
 impl BState {
@@ -82,6 +84,7 @@ impl BState {
             cache: HashMap::new(),
             tried: HashSet::new(),
             cinj: Vec::new(),
+            start_round: 0,
         }
     }
     /// 子の枝用の複製（キャッシュは引き継がない）
@@ -89,6 +92,7 @@ impl BState {
         let mut s = self.clone();
         s.b = b;
         s.cache.clear();
+        s.start_round = 0;
         s
     }
 }

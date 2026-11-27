@@ -37,6 +37,8 @@ pub struct Searcher {
     pub stats: BTreeMap<String, u64>,
     /// 検証済みの加法的な族（任意の加法的関数 A について A + f(0) または A が解）。None = 未計算
     pub(crate) add_fam: Option<Option<AddFamily>>,
+    /// 検証核で確かめた多項式の解の候補（補題の推測に使う。パラメータは Const(1000…) の記号）
+    pub(crate) sols: Vec<Poly>,
 }
 
 pub enum Fin {
@@ -46,7 +48,8 @@ pub enum Fin {
 
 impl Searcher {
     pub fn new(e: Engine) -> Searcher {
-        Searcher { e, reduce_depth: 0, width: 1.0, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new(), add_fam: None }
+        let sols: Vec<Poly> = finalize::find_candidates(&e.k).iter().map(|f| f.g().clone()).collect();
+        Searcher { e, reduce_depth: 0, width: 1.0, round_budget: 0, retry: vec![], open: vec![], max_depth: 10, stats: BTreeMap::new(), add_fam: None, sols }
     }
 
     pub(crate) fn add_time(&mut self, k: &str, t0: Instant) {
@@ -128,7 +131,7 @@ impl Searcher {
 
     pub(crate) fn solve_branch_inner(&mut self, st: &mut BState, depth: u32) -> Res<()> {
         let mut stale = 0;
-        for round in 0..12 {
+        for round in st.start_round.min(11)..12 {
             self.e.check_time()?;
             if self.closed(st) {
                 return Ok(());
@@ -172,6 +175,15 @@ impl Searcher {
             // 閉じた選言の場合分けより先に試す（否定側は f(k·x) = 0 から x := x/k で閉じることが多い）
             if depth <= 5 && st.inj.is_none() && st.zinj.is_none() && !st.tried.contains("zinj") && self.has_zero_image(st) {
                 if self.try_zero_injectivity(st, depth)? {
+                    return Ok(());
+                }
+                if self.closed(st) {
+                    return Ok(());
+                }
+            }
+            // 見つけた解に導かれる補題の推測（すべての解が満たす性質を、否定を閉じられれば補題にする）
+            if round == 2 && depth <= 2 && std::env::var("FE_NO_SPEC").is_err() {
+                if self.speculate_lemmas(st, depth, round)? {
                     return Ok(());
                 }
                 if self.closed(st) {

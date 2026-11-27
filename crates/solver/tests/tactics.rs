@@ -221,3 +221,16 @@ fn tactic_injectivity_in_disjunction() {
     assert_eq!(got, vec!["-x".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
     check_families(eq, &l, &r, &out);
 }
+
+/// 見つけた解に導かれる補題の推測: 枝と矛盾しない解の候補（ここでは f(x) = x）がすべて満たす性質（f(f(x)) = x など）を、
+/// 否定を閉じて補題にする。f(x − y·f(x)) = f(x) − x·f(y) の型（解は 0 と x）
+#[test]
+fn tactic_solution_guided_lemmas() {
+    let eq = "f(x - y*f(x)) = f(x) - x*f(y)";
+    let (l, r, out) = run(eq, 90);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    got.sort();
+    assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+}
