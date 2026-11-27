@@ -340,6 +340,11 @@ impl Searcher {
                 self.e.add_fact(st, zp)?;
                 continue;
             }
+            // 単射性がわかっていれば f(s) − f(t) = 0 の因子を s − t = 0 にする（偽になれば消える）
+            let zp = match st.inj {
+                Some(inj) => self.reduce_by_injectivity(st, inj, zp)?,
+                None => zp,
+            };
             // 無理な因子（実数解なし）を先に消す
             let zp = self.drop_rootless(st, zp)?;
             let n = self.e.clause(zp).lits().len();

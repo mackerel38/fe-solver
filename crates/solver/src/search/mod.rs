@@ -154,6 +154,13 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            // 単射性がわかっていれば、場合分けより先に当てはめる（選言の中も。安い）
+            if st.inj.is_some() {
+                self.apply_injectivity(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+            }
             // 零点の補題がわかっていれば、場合分けより先に当てはめる（安い）
             if st.zinj.is_some() {
                 self.apply_zero_injectivity(st)?;
@@ -248,6 +255,13 @@ impl Searcher {
             }
             if self.try_mark_additive(st)? {
                 return Ok(());
+            }
+            // f の値で決まる量の補題（単射性を含む）は第 0 ラウンドから（最初の場合分けの前に単射性を知るため）
+            if round == 0 {
+                self.value_lemmas(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
             }
             if round >= 1 {
                 self.swap_differences(st)?;

@@ -277,7 +277,62 @@ impl Searcher {
                 return Ok(());
             }
         }
+        // 選言のリテラル c(f(s) − f(t)) = 0 も s − t = 0 に置き換える（単射性の例「s − t = 0 ∨ f(s) − f(t) ≠ 0」との導出原理）。
+        // 変数のない選言（場合分けの候補）も対象にする
+        let others: Vec<Fact> = st.others.iter().copied().filter(|&f| {
+            let c = self.e.clause(f);
+            c.lits().len() >= 2 && c.lits().len() <= 3
+        }).collect();
+        for o in others.into_iter().take(self.scaled(12)) {
+            let key = format!("injd|{:?}", o);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let cur = self.reduce_by_injectivity(st, inj, o)?;
+            if cur != o {
+                self.bump("inj_apply_disj");
+                self.e.add_fact(st, cur)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// 単射性 inj（「y − x = 0 ∨ f(y) − f(x) ≠ 0」）で、節のリテラル c(f(s) − f(t)) = 0 を s − t = 0 に置き換える（導出原理、最大 3 個）
+    pub(crate) fn reduce_by_injectivity(&mut self, st: &mut BState, inj: Fact, o: Fact) -> Res<Fact> {
+        let mut cur = o;
+        for _ in 0..3 {
+            let c = self.e.clause(cur).clone();
+            let mut found: Option<(usize, Poly, Poly)> = None;
+            for (i, l) in c.lits().iter().enumerate() {
+                if l.rel() != Rel::Eq || l.poly().terms().len() != 2 {
+                    continue;
+                }
+                let (m1, c1) = &l.poly().terms()[0];
+                let (m2, c2) = &l.poly().terms()[1];
+                if *c1 != -c2.clone() || m1.factors().len() != 1 || m2.factors().len() != 1 || m1.factors()[0].1 != 1 || m2.factors()[0].1 != 1 {
+                    continue;
+                }
+                if let (Atom::F(s1), Atom::F(s2)) = (&m1.factors()[0].0, &m2.factors()[0].0) {
+                    found = Some((i, (**s1).clone(), (**s2).clone()));
+                    break;
+                }
+            }
+            let (li, s1, s2) = match found {
+                Some(t) => t,
+                None => break,
+            };
+            let inst = self.e.k.instantiate(st.b, inj, vec![s1.clone(), s2.clone()], c.nvars())?;
+            let want = Lit::ne(Poly::f(s1).sub(&Poly::f(s2)));
+            let zi = match self.e.clause(inst).lits().iter().position(|l| *l == want) {
+                Some(i) => i,
+                None => break,
+            };
+            cur = self.e.k.resolve(st.b, cur, li, inst, zi)?;
+        }
+        Ok(cur)
     }
 
 }
