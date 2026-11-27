@@ -125,6 +125,8 @@ fn match_rec(p: &Poly, t: &Poly, s: &mut Vec<Option<Poly>>, depth: u32) -> bool 
         let mut sq: Option<Q> = None;
         let mut rest = Poly::zero();
         let mut ok = true;
+        // v の係数が閉じた式（パターン変数を含まない原子の積。例: a·v）の項
+        let mut lin_closed = Poly::zero();
         for (m, c) in p2.terms() {
             let has = m.factors().iter().any(|(a, _)| *a == Atom::Var(v));
             if !has {
@@ -133,6 +135,14 @@ fn match_rec(p: &Poly, t: &Poly, s: &mut Vec<Option<Poly>>, depth: u32) -> bool 
                 lin = Some(c.clone());
             } else if m.factors().len() == 1 && m.factors()[0].1 == 2 {
                 sq = Some(c.clone());
+            } else if m.factors().iter().all(|(a, e)| (*a == Atom::Var(v) && *e == 1) || (*a != Atom::Var(v) && pat_vars(&Poly::from_atom(a.clone())).is_empty())) {
+                let mut coef = Poly::constant(c.clone());
+                for (a, e) in m.factors() {
+                    if *a != Atom::Var(v) {
+                        coef = coef.mul(&Poly::from_atom(a.clone()).pow(*e));
+                    }
+                }
+                lin_closed = lin_closed.add(&coef);
             } else {
                 ok = false;
             }
@@ -141,6 +151,22 @@ fn match_rec(p: &Poly, t: &Poly, s: &mut Vec<Option<Poly>>, depth: u32) -> bool 
             return false;
         }
         let idx = (v - PAT) as usize;
+        // 係数が閉じた式の 1 次: v = (t − 残り)/C（割り切れるときだけ）
+        if !lin_closed.is_zero() && sq.is_none() {
+            let cc = match &lin {
+                Some(q) => lin_closed.add(&Poly::constant(q.clone())),
+                None => lin_closed.clone(),
+            };
+            let val = match crate::polyutil::exact_div(&t.sub(&rest), &cc) {
+                Some(q) => q,
+                None => return false,
+            };
+            if !pat_vars(&val).is_empty() {
+                return false;
+            }
+            s[idx] = Some(val);
+            return apply(p, s) == *t;
+        }
         match (lin, sq) {
             (Some(c), None) => {
                 let val = t.sub(&rest).scale(&(Q::one() / c));
@@ -243,5 +269,12 @@ mod tests {
         // 定数
         assert!(match_poly(&Poly::zero(), 0, &Poly::zero()).is_some());
         assert!(match_poly(&Poly::zero(), 0, &x()).is_none());
+        // 係数が閉じた式の 1 次: a·x + 1 と a·(y + 2) + 1（a は定数の記号）なら x = y + 2。割り切れなければ照合しない
+        let a = Poly::cnst(0);
+        let pat = a.mul(&x()).add(&Poly::one());
+        let t = a.mul(&y().add(&Poly::int(2))).add(&Poly::one());
+        let s = match_poly(&pat, 1, &t).unwrap();
+        assert_eq!(s[0], y().add(&Poly::int(2)));
+        assert!(match_poly(&pat, 1, &y().add(&Poly::one())).is_none());
     }
 }
