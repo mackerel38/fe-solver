@@ -65,6 +65,8 @@ pub struct BState {
     pub start_round: usize,
     /// 閉じた u ≠ 0 から作った「u² > 0」の事実（正の値の判定に使う）
     pub pos_sq: Vec<(Poly, Fact)>,
+    /// 補題の試行の否定側の枝の中か（短い持ち時間なので、補題の推測などの重い試行はしない）
+    pub in_trial: bool,
 }
 
 impl BState {
@@ -88,6 +90,7 @@ impl BState {
             cinj: Vec::new(),
             start_round: 0,
             pos_sq: Vec::new(),
+            in_trial: false,
         }
     }
     /// 子の枝用の複製（キャッシュは引き継がない）

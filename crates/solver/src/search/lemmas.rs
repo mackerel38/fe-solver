@@ -32,6 +32,7 @@ impl Searcher {
         let open_before = self.open.len();
         let mut cst = st.child(c1);
         cst.tried.insert("inj".into());
+        cst.in_trial = true;
         let r = (|| -> Res<()> {
             for h in &hs {
                 self.e.add_fact(&mut cst, *h)?;
@@ -89,6 +90,7 @@ impl Searcher {
         let mut cst = st.child(c1);
         cst.tried.insert("zinj".into());
         cst.tried.insert("inj".into());
+        cst.in_trial = true;
         let r = (|| -> Res<()> {
             for h in &hs {
                 self.e.add_fact(&mut cst, *h)?;
@@ -349,6 +351,7 @@ impl Searcher {
         let retry_before = self.retry.len();
         let mut cst = st.child(c1);
         cst.tried.insert(format!("spec|{}", name));
+        cst.in_trial = true;
         let r = (|| -> Res<()> {
             for h in &hs {
                 self.e.add_fact(&mut cst, *h)?;
@@ -419,6 +422,9 @@ impl Searcher {
     /// f(1) = c、f(x + 1) = f(x) + c）のうち、この枝と矛盾しない解の候補すべてが満たすものを、否定を閉じて補題にする。
     /// 健全性は検証核による（候補の選び方は推測でよい）。
     pub(crate) fn speculate_lemmas(&mut self, st: &mut BState, depth: u32, round: usize) -> Res<bool> {
+        if st.in_trial {
+            return Ok(false);
+        }
         let sols = self.consistent_sols(st);
         // 定数の解しか残っていなければ（どの性質も満たしてしまうので）推測しない
         if sols.is_empty() || sols.iter().all(|g| !g.vars().contains(&0)) {
