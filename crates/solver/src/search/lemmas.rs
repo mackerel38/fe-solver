@@ -335,4 +335,141 @@ impl Searcher {
         Ok(cur)
     }
 
+    /// 補題の試行（一般形）: 節 c を排中律で分け、否定側（反例の定数つき）を限られた時間で閉じられれば、
+    /// c を仮定した側で探索を続ける（c は証明済みの補題になる）。閉じられなければ場合分けを取り消す（AbandonSplit）。
+    /// 戻り値: 補題として使って探索を続けたら true。
+    pub(crate) fn try_lemma(&mut self, st: &mut BState, depth: u32, round: usize, c: fe_kernel::Clause, name: &str) -> Res<bool> {
+        let (c0, h0, c1, hs, _consts) = self.e.k.split_em(st.b, c)?;
+        self.bump(&format!("spec_try_{}", name));
+        let saved = self.e.deadline;
+        let now = Instant::now();
+        let remain = saved.saturating_duration_since(now);
+        self.e.deadline = now + (remain / 8).min(Duration::from_secs(2));
+        let open_before = self.open.len();
+        let retry_before = self.retry.len();
+        let mut cst = st.child(c1);
+        cst.tried.insert(format!("spec|{}", name));
+        let r = (|| -> Res<()> {
+            for h in &hs {
+                self.e.add_fact(&mut cst, *h)?;
+            }
+            Ok(())
+        })();
+        match r {
+            Ok(()) => self.solve_branch(cst, depth + 1)?,
+            Err(m) if m == TIMEOUT => {}
+            Err(m) => {
+                self.e.deadline = saved;
+                return Err(m);
+            }
+        }
+        self.e.deadline = saved;
+        self.open.truncate(open_before);
+        self.retry.truncate(retry_before);
+        if !self.e.k.is_closed(c1) {
+            self.e.k.abandon_split(st.b)?;
+            return Ok(false);
+        }
+        self.bump(&format!("spec_proved_{}", name));
+        let mut c0st = st.child(c0);
+        c0st.tried.insert(format!("spec|{}", name));
+        c0st.start_round = round;
+        let r = self.e.add_fact(&mut c0st, h0);
+        // 補題を仮定した側は実質的な場合分けではないので、深さを増やさずに続ける
+        match r {
+            Ok(_) => self.solve_branch(c0st, depth)?,
+            Err(m) if m == TIMEOUT => self.open.push((c0, TIMEOUT.into())),
+            Err(m) => return Err(m),
+        }
+        Ok(true)
+    }
+
+    /// f を解の候補 g で置き換えた式（入れ子の f も内側から置き換える）
+    fn apply_sol(p: &Poly, g: &Poly) -> Poly {
+        p.transform(&mut |a| match a {
+            Atom::F(u) => g.subst_vars(&[Self::apply_sol(&u, g)]),
+            other => Poly::from_atom(other),
+        })
+    }
+
+    /// 解の候補のうち、この枝の事実と明らかには矛盾しないもの（候補の選び方にだけ使う。証明には使わない）
+    fn consistent_sols(&self, st: &BState) -> Vec<Poly> {
+        self.sols
+            .iter()
+            .filter(|g| {
+                for &u in &st.units {
+                    let p = Self::apply_sol(&self.e.poly0(u), g);
+                    // 定数（パラメータや枝の定数を含まない）になって 0 でなければ矛盾
+                    if p.as_const().map_or(false, |c| !c.is_zero()) {
+                        return false;
+                    }
+                }
+                for &n in &st.nes {
+                    if Self::apply_sol(&self.e.poly0(n), g).is_zero() {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// 見つけた解に導かれる補題の推測: 性質の一覧（f(0) = 0、奇関数、偶関数、f(f(x)) = x、f(f(x)) = f(x)、
+    /// f(1) = c、f(x + 1) = f(x) + c）のうち、この枝と矛盾しない解の候補すべてが満たすものを、否定を閉じて補題にする。
+    /// 健全性は検証核による（候補の選び方は推測でよい）。
+    pub(crate) fn speculate_lemmas(&mut self, st: &mut BState, depth: u32, round: usize) -> Res<bool> {
+        let sols = self.consistent_sols(st);
+        // 定数の解しか残っていなければ（どの性質も満たしてしまうので）推測しない
+        if sols.is_empty() || sols.iter().all(|g| !g.vars().contains(&0)) {
+            return Ok(false);
+        }
+        let one = Poly::one();
+        let mut menu: Vec<(&str, u32, Poly)> = vec![
+            ("f0", 0, Poly::f(Poly::zero())),
+            ("odd", 1, Poly::f(x().neg()).add(&Poly::f(x()))),
+            ("invol", 1, Poly::f(Poly::f(x())).sub(&x())),
+        ];
+        let tail: Vec<(&str, u32, Poly)> = vec![
+            ("even", 1, Poly::f(x().neg()).sub(&Poly::f(x()))),
+            ("idem", 1, Poly::f(Poly::f(x())).sub(&Poly::f(x()))),
+        ];
+        // f(1) の値・f(x + 1) − f(x) が解の候補で共通の有理数なら、それも候補にする
+        let v1: Vec<Poly> = sols.iter().map(|g| g.subst_vars(&[one.clone()])).collect();
+        if v1.iter().all(|v| v.as_const().is_some() && *v == v1[0]) {
+            menu.push(("f1", 0, Poly::f(one.clone()).sub(&v1[0])));
+        }
+        let dv: Vec<Poly> = sols.iter().map(|g| g.subst_vars(&[x().add(&one)]).sub(g)).collect();
+        if dv.iter().all(|v| v.as_const().is_some() && *v == dv[0]) && !dv[0].is_zero() {
+            menu.push(("shift1", 1, Poly::f(x().add(&one)).sub(&Poly::f(x())).sub(&dv[0])));
+        }
+        menu.extend(tail);
+        let mut tried_n = 0;
+        for (name, nv, p) in menu {
+            if tried_n >= 2 || self.closed(st) {
+                break;
+            }
+            let key = format!("spec|{}", name);
+            if st.tried.contains(&key) {
+                continue;
+            }
+            // すべての候補が満たすか
+            if !sols.iter().all(|g| Self::apply_sol(&p, g).is_zero()) {
+                continue;
+            }
+            // すでに事実として知っているなら試さない（書き換えで 0 になる）
+            let (d, _) = self.e.rw_poly(st, &p, nv)?;
+            st.tried.insert(key);
+            if d.is_zero() {
+                continue;
+            }
+            tried_n += 1;
+            let c = fe_kernel::Clause::new(nv, vec![Lit::eq(p)]).map_err(|e| e.to_string())?;
+            if self.try_lemma(st, depth, round, c, name)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
 }
