@@ -73,6 +73,8 @@ pub struct BState {
     pub pos_sq: Vec<(Poly, Fact)>,
     /// 補題の試行の否定側の枝の中か（短い持ち時間なので、補題の推測などの重い試行はしない）
     pub in_trial: bool,
+    /// この枝（と祖先）で条件つきの単射性を当てはめた、右辺が同じ規則の組の数（当てはめが増えすぎないように上限を設ける）
+    pub cinj_pairs: usize,
 }
 
 impl BState {
@@ -97,6 +99,7 @@ impl BState {
             start_round: 0,
             pos_sq: Vec::new(),
             in_trial: false,
+            cinj_pairs: 0,
         }
     }
     /// 子の枝用の複製（キャッシュは引き継がない）

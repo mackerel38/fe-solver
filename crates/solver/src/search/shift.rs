@@ -426,27 +426,87 @@ impl Searcher {
             } else {
                 budget0 -= 1;
             }
-            for ci in st.cinj.clone() {
-                for (a, bb) in [(s2.clone(), s1.clone()), (s1.clone(), s2.clone())] {
-                    let key = format!("cinj|{:?}|{:?}|{}", u, ci, a);
-                    if !st.tried.insert(key) {
-                        continue;
-                    }
-                    let inst = self.e.k.instantiate(st.b, ci, vec![a.clone(), bb.clone()], nv)?;
-                    let want = Lit::ne(Poly::f(bb.clone()).sub(&Poly::f(a.clone())));
-                    let li = match self.e.clause(inst).lits().iter().position(|l| *l == want) {
-                        Some(i) => i,
-                        None => continue,
-                    };
-                    let r = self.e.k.resolve(st.b, inst, li, u, 0)?;
-                    self.bump("cinj_apply");
-                    self.e.add_fact(st, r)?;
-                    if self.closed(st) {
-                        return Ok(());
-                    }
+            if self.cinj_on_pair(st, u, &s1, &s2, nv)? {
+                return Ok(());
+            }
+        }
+        // 右辺が同じ 2 つの書き換え規則 f(A₁) → R、f(A₂) → R の組: 差 f(A₁) − f(A₂) = 0 を一次結合で作り（正規化すると 0 = 0 に
+        // 消えるので事実としては加えず、前提としてだけ使う）、同じように当てはめる（例: f(f(x)²) = x f(x) と f(x²) = x f(x)）
+        let rules: Vec<RwRule> = st
+            .rules
+            .iter()
+            .filter(|r| r.nvars <= 1 && matches!(&r.lhs, Atom::F(a) if poly_size(a) <= 24) && poly_size(&r.rhs) <= 24)
+            .cloned()
+            .collect();
+        // 右辺が同じ組を、左辺と右辺の大きさの和が小さい順に試す（役に立つ組は小さいことが多い）
+        let mut cand: Vec<(u32, usize, usize)> = Vec::new();
+        for i in 0..rules.len() {
+            for j in (i + 1)..rules.len() {
+                let (r1, r2) = (&rules[i], &rules[j]);
+                if r1.nvars != r2.nvars || r1.rhs != r2.rhs || r1.lhs == r2.lhs {
+                    continue;
+                }
+                let sz = poly_size(&Poly::from_atom(r1.lhs.clone())) + poly_size(&Poly::from_atom(r2.lhs.clone())) + poly_size(&r1.rhs);
+                cand.push((sz, i, j));
+            }
+        }
+        cand.sort();
+        let mut pairs = 0;
+        for (_, i, j) in cand {
+            {
+                if pairs >= self.scaled(8) || st.cinj_pairs >= self.scaled(16) || self.closed(st) {
+                    return Ok(());
+                }
+                let (r1, r2) = (&rules[i], &rules[j]);
+                let key = format!("cinjrule|{:?}|{:?}", r1.fact, r2.fact);
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let (s1, s2) = match (&r1.lhs, &r2.lhs) {
+                    (Atom::F(a), Atom::F(b)) => ((**a).clone(), (**b).clone()),
+                    _ => continue,
+                };
+                let t1 = Poly::from_atom(r1.lhs.clone()).sub(&r1.rhs);
+                let t2 = Poly::from_atom(r2.lhs.clone()).sub(&r2.rhs);
+                let (k1, k2) = match (scale_ratio(&self.e.poly0(r1.fact), &t1), scale_ratio(&self.e.poly0(r2.fact), &t2)) {
+                    (Some(a), Some(b)) => (a, b),
+                    _ => continue,
+                };
+                let nv = r1.nvars;
+                let d = self.e.k.lincomb(st.b, nv, vec![(Poly::constant(Q::one() / k1), r1.fact, 0), (Poly::constant(-(Q::one() / k2)), r2.fact, 0)])?;
+                pairs += 1;
+                st.cinj_pairs += 1;
+                self.bump("cinj_rule_pair");
+                if self.cinj_on_pair(st, d, &s1, &s2, nv)? {
+                    return Ok(());
                 }
             }
         }
         Ok(())
+    }
+
+    /// 単位等式 u（f(s₁) − f(s₂) の定数倍 = 0）に、条件つきの単射性「Q ∨ f(y) − f(x) ≠ 0」を当てはめて Q を加える。閉じたら true
+    fn cinj_on_pair(&mut self, st: &mut BState, u: Fact, s1: &Poly, s2: &Poly, nv: u32) -> Res<bool> {
+        for ci in st.cinj.clone() {
+            for (a, bb) in [(s2.clone(), s1.clone()), (s1.clone(), s2.clone())] {
+                let key = format!("cinj|{:?}|{:?}|{}", u, ci, a);
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let inst = self.e.k.instantiate(st.b, ci, vec![a.clone(), bb.clone()], nv)?;
+                let want = Lit::ne(Poly::f(bb.clone()).sub(&Poly::f(a.clone())));
+                let li = match self.e.clause(inst).lits().iter().position(|l| *l == want) {
+                    Some(i) => i,
+                    None => continue,
+                };
+                let r = self.e.k.resolve(st.b, inst, li, u, 0)?;
+                self.bump("cinj_apply");
+                self.e.add_fact(st, r)?;
+                if self.closed(st) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 }
