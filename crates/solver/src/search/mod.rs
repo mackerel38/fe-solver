@@ -186,9 +186,18 @@ impl Searcher {
             // 条件つきの単射性（f(y) = f(x) なら Q(x, y)）も、場合分けより先に当てはめる（導出原理だけで安い。
             // 例: f(y) = f(x) なら y² = x² を f(f(0)²) = f(0) や f(x f(x)) = f(x²) に当てはめる）
             if round >= 1 && !st.cinj.is_empty() {
-                self.apply_cond_injectivity(st)?;
-                if self.closed(st) {
-                    return Ok(());
+                // 当てはめで新しい事実（f(0) = 0 など）ができると、ほかの事実が書き換わって当てはめられる形になることがあるので、
+                // 新しい事実が出なくなるまで繰り返す（最大 3 回）
+                for _ in 0..3 {
+                    // 書き換えで単位等式が置き換わっても個数は変わらないので、一覧そのものを比べる
+                    let before = (st.units.clone(), st.others.len());
+                    self.apply_cond_injectivity(st)?;
+                    if self.closed(st) {
+                        return Ok(());
+                    }
+                    if (st.units.clone(), st.others.len()) == before {
+                        break;
+                    }
                 }
             }
             // f が式 T の値で 0 になる事実があれば、零点の補題（f(t) = 0 ⇒ t = 0 か、f(k) = 0 となる k ≠ 0 があるか）を
@@ -314,6 +323,12 @@ impl Searcher {
                     return Ok(());
                 }
                 self.shift_lemmas(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+                // このラウンドの後半でできた 1 変数の事実（条件つきの単射性の当てはめの結果など）も、次のラウンドの場合分けより
+                // 先に因数分解する（試した事実は覚えているので安い）
+                self.zero_products(st)?;
                 if self.closed(st) {
                     return Ok(());
                 }

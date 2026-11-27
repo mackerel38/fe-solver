@@ -371,3 +371,16 @@ fn tactic_power_zero_from_value_lemma() {
     });
     assert!(found, "{}: f(0)⁴ = 0 から零積の規則で f(0) = 0 が導かれていない", eq);
 }
+
+/// 条件つきの単射性（f の値で決まる量の補題）の当てはめの繰り返し: P(0, y) の f(f(y)²) = f(0) + y² から「f(y) = f(z) なら
+/// y² = z²」。f(f(0)²) = f(0) に当てはめて f(0) = 0、すると P(x, 0) が f(2x f(x)) = f(2x²) に書き換わるので、もう一度当てはめて
+/// 4x²f(x)² = 4x⁴、x²(f(x)² − x²) = 0 から f(x)² = x²。問題集にない係数の式（FE-0355 の型）
+#[test]
+fn tactic_cond_injectivity_fixpoint() {
+    let eq = "f(2*x*f(x) + f(y)^2) = f(2*x^2) + y^2";
+    let (l, r, out) = run(eq, 60);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    assert_eq!(got, vec!["x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+}
