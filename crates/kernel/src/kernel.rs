@@ -68,6 +68,7 @@ pub enum Rule {
     CauchyBounded { additive: Fact, bound: Fact },
     AffineXY { premise: Fact },
     AffineFF { premise: Fact },
+    AdditiveSquare { add: Fact, sq: Fact },
     ImportLemma { premise: Fact, lemma: std::rc::Rc<Kernel> },
 }
 
@@ -825,6 +826,41 @@ impl Kernel {
         let concl = Poly::f(x.clone()).sub(&f1.sub(&f0).mul(&x)).sub(&f0);
         let out = Clause::new(1, vec![Lit::eq(concl)])?;
         Ok(self.push(out, target, Rule::AffineFF { premise }))
+    }
+
+    /// 規則 AdditiveSquare（0 以上で加法的で f(x²) = x·f(x) なら 1 次関数）:
+    /// 前提 add が単位等式「∀x,y. λ(f(x² + y²) − f(x²) − f(y²)) = 0」、前提 sq が単位等式「∀x. μ(f(x²) − x·f(x)) = 0」
+    /// （λ, μ は 0 でない有理数）なら「∀x. f(x) − f(1)·x = 0」。
+    /// 根拠: sq で x = 0 として f(0) = 0。add より、s, t ≥ 0 で f(s + t) = f(s) + f(t)（s = x², t = y²）。
+    ///  sq を x と −x で比べて x·f(x) = f(x²) = −x·f(−x)、x ≠ 0 で f(−x) = −f(x)、f(0) = 0 なので f は奇関数。
+    ///  任意の実数 u, v について f(u + v) = f(u) + f(v): u, v ≥ 0 なら add。u ≥ 0 > v で u + v ≥ 0 なら
+    ///  f(u) = f((u + v) + (−v)) = f(u + v) + f(−v) = f(u + v) − f(v)。u + v < 0 なら f(−v) = f((−u − v) + u) = f(−u − v) + f(u)
+    ///  から f(u + v) = −f(−u − v) = f(u) + f(v)。u, v < 0 なら奇関数性で f(u + v) = −f(−u − v) = −f(−u) − f(−v) = f(u) + f(v)。
+    ///  よって f は加法的で、f(2x) = 2f(x)。sq を x + 1 で使うと
+    ///  (x + 1)·f(x + 1) = f(x² + 2x + 1) = f(x²) + f(2x) + f(1) = x·f(x) + 2f(x) + f(1)。
+    ///  左辺は (x + 1)(f(x) + f(1)) = x·f(x) + x·f(1) + f(x) + f(1) なので、整理して f(x) = f(1)·x。
+    pub fn additive_square(&mut self, target: BranchId, add: Fact, sq: Fact) -> R<Fact> {
+        self.check_branch(target)?;
+        let ca = self.premise(add, target)?.clone();
+        let cs = self.premise(sq, target)?.clone();
+        let x = Poly::var(0);
+        let y = Poly::var(1);
+        let fx2 = Poly::f(x.mul(&x));
+        let fy2 = Poly::f(y.mul(&y));
+        let want_add = Poly::f(x.mul(&x).add(&y.mul(&y))).sub(&fx2).sub(&fy2);
+        let want_sq = fx2.sub(&x.mul(&Poly::f(x.clone())));
+        let is_multiple = |c: &Clause, n: u32, w: &Poly| -> bool {
+            c.nvars() == n && c.lits().len() == 1 && c.lits()[0].rel() == Rel::Eq && c.lits()[0].poly().monic() == w.monic()
+        };
+        if !is_multiple(&ca, 2, &want_add) {
+            return Err("AdditiveSquare の前提 add は f(x² + y²) − f(x²) − f(y²) = 0 の形".into());
+        }
+        if !is_multiple(&cs, 1, &want_sq) {
+            return Err("AdditiveSquare の前提 sq は f(x²) − x·f(x) = 0 の形".into());
+        }
+        let concl = Poly::f(x.clone()).sub(&Poly::f(Poly::one()).mul(&x));
+        let out = Clause::new(1, vec![Lit::eq(concl)])?;
+        Ok(self.push(out, target, Rule::AdditiveSquare { add, sq }))
     }
 
     /// p が λ(f(c·f(u)·f(v) + G) − d·v·f(u) − H)（c, d ≠ 0、G, H は v を含まない）の形か

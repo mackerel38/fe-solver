@@ -2,7 +2,7 @@
 //! 誤った使い方（前提の形が違う・スコープ外の定数・別の枝の事実など）が拒否されることを確かめる。
 
 use fe_kernel::poly::{q, qf};
-use fe_kernel::{Clause, Kernel, Lit, Poly, Rel, ROOT};
+use fe_kernel::{Clause, Fact, Kernel, Lit, Poly, Rel, Q, ROOT};
 
 fn x() -> Poly {
     Poly::var(0)
@@ -824,4 +824,44 @@ fn affine_ff_rule() {
     check(f(fx().mul(&fy())), y().mul(&fx()).add(&fy()), false, "h が f(y) を含む");
     // y f(x) の項がない
     check(f(fx().mul(&fy()).add(&x())), x().add(&fy()), false, "y f(x) の項がない");
+}
+
+/// AdditiveSquare: 「f(x² + y²) − f(x²) − f(y²) = 0」と「f(x²) − x·f(x) = 0」から f(x) = f(1)·x。
+/// 前提は f(x² + y²) = x f(x) + y f(y) の公理から作る（P(x, 0) と、公理 − P(x, 0) − P(y, 0)）
+#[test]
+fn additive_square_rule() {
+    let x2 = x().mul(&x());
+    let y2 = y().mul(&y());
+    let mut k = Kernel::new(f(x2.add(&y2)), x().mul(&f(x())).add(&y().mul(&f(y())))).unwrap();
+    let ax = k.axiom();
+    // sq: P(x, 0) = f(x²) − x f(x) − 0·f(0)
+    let sq = k.instantiate(ROOT, ax, vec![x(), Poly::zero()], 1).unwrap();
+    assert_eq!(*k.clause(sq), cl(1, vec![Lit::eq(f(x2.clone()).sub(&x().mul(&f(x()))))]));
+    let sqx = k.instantiate(ROOT, sq, vec![x()], 2).unwrap();
+    let sqy = k.instantiate(ROOT, sq, vec![y()], 2).unwrap();
+    let coef = |fact: Fact, k: &Kernel, want: &Poly| -> Q {
+        let p = k.clause(fact).lits()[0].poly().clone();
+        let (m, c) = want.terms()[0].clone();
+        let c2 = p.terms().iter().find(|(m2, _)| *m2 == m).unwrap().1.clone();
+        c2 / c
+    };
+    let wx = f(x2.clone()).sub(&x().mul(&f(x())));
+    let wy = f(y2.clone()).sub(&y().mul(&f(y())));
+    let kx = coef(sqx, &k, &wx);
+    let ky = coef(sqy, &k, &wy);
+    let add = k
+        .lincomb(ROOT, 2, vec![(Poly::one(), ax, 0), (Poly::constant(-(q(1) / kx)), sqx, 0), (Poly::constant(-(q(1) / ky)), sqy, 0)])
+        .unwrap();
+    assert_eq!(*k.clause(add), cl(2, vec![Lit::eq(f(x2.add(&y2)).sub(&f(x2.clone())).sub(&f(y2.clone())))]));
+    let concl = f(x()).sub(&f(c(1)).mul(&x()));
+    let r = k.additive_square(ROOT, add, sq).unwrap();
+    assert_eq!(*k.clause(r), cl(1, vec![Lit::eq(concl)]));
+    // 前提の取り違え・形の違う前提は拒否
+    assert!(k.additive_square(ROOT, sq, add).is_err(), "前提の取り違え");
+    assert!(k.additive_square(ROOT, ax, sq).is_err(), "公理そのもの（f(x²), f(y²) の形でない）");
+    let f0 = k.instantiate(ROOT, add, vec![x(), Poly::zero()], 1).unwrap(); // −f(0) = 0
+    assert!(k.additive_square(ROOT, add, f0).is_err(), "sq の形でない");
+    // f(x²) = x f(x) だけで加法性がない場合（f(x² + y²) = f(x²) + f(y²) ではない 2 変数の事実）は拒否
+    let other = k.instantiate(ROOT, ax, vec![x(), x()], 2).unwrap();
+    assert!(k.additive_square(ROOT, other, sq).is_err(), "加法性の形でない");
 }

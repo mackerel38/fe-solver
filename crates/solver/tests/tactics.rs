@@ -398,3 +398,19 @@ fn tactic_linear_root_factoring() {
         check_families(eq, &l, &r, &out);
     }
 }
+
+/// 既知の型の当てはめ（検証核の規則 AdditiveSquare）: 0 以上で加法的（f(x² + y²) = f(x²) + f(y²)）で f(x²) = x·f(x) なら
+/// f(x) = f(1)·x。2 変数の事実を例化し f(x²) = x·f(x) の定数倍を差し引いて前提の形を作る。問題集にない係数の式で
+#[test]
+fn tactic_additive_square_type() {
+    for eq in ["f(x^2 + y^2) = 2*x*f(x) - f(x^2) + y*f(y)", "f(x^2 + y^2) = 3*x*f(x) - 2*f(x^2) + y*f(y)"] {
+        let (l, r, out) = run(eq, 30);
+        assert_eq!(out.status, "complete", "{}", eq);
+        let used = out.stats.iter().find(|(k, _)| k == "additive_square").map_or(0, |(_, v)| *v);
+        assert!(used > 0, "{}: AdditiveSquare を使っていない", eq);
+        check_families(eq, &l, &r, &out);
+        let fresh = Kernel::new(l.clone(), r.clone()).unwrap();
+        // 解の族は f(x) = c·x（c は任意）
+        assert!(out.families.iter().any(|f| fresh.verify_solution(f.g()).is_ok()), "{}: 解の族がない", eq);
+    }
+}
