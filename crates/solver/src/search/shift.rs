@@ -20,12 +20,30 @@ impl Searcher {
         units.sort_by_key(|f| poly_size(&self.e.poly0(*f)));
         units.truncate(self.scaled(3));
         let one = Poly::one();
-        let shifts: Vec<Vec<Poly>> = vec![
+        let mut shifts: Vec<Vec<Poly>> = vec![
             vec![x(), y().add(&one)],
             vec![x().add(&one), y()],
             vec![x(), y().sub(&one)],
             vec![x().sub(&one), y()],
         ];
+        // 平行移動の事実 f(x + K) = a·f(x) + b（K は閉じた式）があれば、K だけのずらしも使う
+        for &f1 in &st.units {
+            if self.e.nvars(f1) != 1 {
+                continue;
+            }
+            for a in self.e.poly0(f1).top_atoms() {
+                if let Atom::F(u) = &a {
+                    let k = u.sub(&x());
+                    if !k.is_zero() && !k.has_var() && k.as_const().is_none() && poly_size(&k) <= 12 {
+                        for sb in [vec![x(), y().add(&k)], vec![x().add(&k), y()]] {
+                            if !shifts.contains(&sb) && shifts.len() < 8 {
+                                shifts.push(sb);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for u in units {
             for sb in &shifts {
                 if self.closed(st) || !st.units.contains(&u) {
@@ -45,23 +63,35 @@ impl Searcher {
                 }
                 let pn = self.e.poly0(nf);
                 let pu = self.e.poly0(u);
-                // 共通の単項式の係数をそろえて引き、項が減るものを探す
-                let mut best: Option<Q> = None;
+                // 共通の単項式（閉じた因子の違いは許す）の係数をそろえて引き、項が減るものを探す。
+                // 掛ける係数 k は有理数か閉じた式（f(1) など）
+                let mut best: Option<Poly> = None;
                 for (m, cu) in pu.terms() {
-                    if let Some((_, cn)) = pn.terms().iter().find(|(m2, _)| m2 == m) {
-                        let k = cn / cu;
-                        let d = pn.sub(&pu.scale(&k));
-                        if d.has_f() && d.terms().len() < pn.terms().len() && best.as_ref().map_or(true, |_| true) {
-                            best = Some(k);
-                            break;
+                    let mut k = Poly::zero();
+                    for (m2, cn) in pn.terms() {
+                        if let Some(qm) = m2.div(m) {
+                            let qp = Poly::mono(qm, Q::one());
+                            if !qp.has_var() {
+                                k = k.add(&qp.scale(&(cn / cu)));
+                            }
                         }
+                    }
+                    if k.is_zero() {
+                        continue;
+                    }
+                    let d = pn.sub(&pu.mul(&k));
+                    // f(x), f(y) のように変数そのものに f を適用した原子の数
+                    let bare = |p: &Poly| p.top_atoms().iter().filter(|a| matches!(a, Atom::F(u) if u.terms().len() == 1 && u.terms()[0].0.factors().len() == 1 && matches!(u.terms()[0].0.factors()[0], (Atom::Var(_), 1)) && *u.terms()[0].1.numer() == 1.into() && *u.terms()[0].1.denom() == 1.into())).count();
+                    if d.has_f() && (d.terms().len() < pn.terms().len() || bare(&d) < bare(&pn)) {
+                        best = Some(k);
+                        break;
                     }
                 }
                 let k = match best {
                     Some(k) => k,
                     None => continue,
                 };
-                let r = self.e.k.lincomb(st.b, 2, vec![(Poly::one(), nf, 0), (Poly::constant(-k), u, 0)])?;
+                let r = self.e.k.lincomb(st.b, 2, vec![(Poly::one(), nf, 0), (k.neg(), u, 0)])?;
                 self.bump("shift_diff");
                 self.e.add_fact(st, r)?;
             }
