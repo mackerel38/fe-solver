@@ -8,7 +8,12 @@ use fe_solver::parse::parse_general;
 use fe_solver::solve::{solve, SolveOutput};
 use std::time::Duration;
 
+/// 探索の時間配分は実時間で決まるので、重いテストが同時に動いて CPU を取り合うと結果が変わりうる。
+/// このファイルの求解は 1 つずつ行う（テストの条件は弱めていない）。
+static SOLVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn run(eq: &str, secs: u64) -> (Poly, Poly, SolveOutput) {
+    let _guard = SOLVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (l, r) = parse_general(eq).unwrap();
     let out = solve(l.clone(), r.clone(), Duration::from_secs(secs)).unwrap();
     (l, r, out)
