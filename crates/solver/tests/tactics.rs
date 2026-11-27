@@ -294,16 +294,45 @@ fn tactic_affine_ff_type() {
 }
 
 /// 逆数の代入 x := K/x（reciprocal_instances）: 「x ≠ 0 ならば x·f(b/x) = …」の形の事実で f の引数の b/x を消す。
-/// 問題集にない式（f(f(xy) + x²) = x f(x) + x f(y) の符号を変えたもの）で確かめる。
+/// 問題集にない式（f(f(xy) + x²) = x f(x) + x f(y) の符号・係数を変えたもの）で確かめる。
+/// 最初に選んだ式 f(f(xy) − x²) = x f(y) − x f(x) は、規則の自己合成を入れてから逆数の代入を使わずに解けるようになったので、
+/// 逆数の代入を使うことの確認は係数 2 の式で行い、最初の式は完全解決の確認として残す。
 #[test]
 fn tactic_reciprocal_substitution() {
-    let eq = "f(f(x*y) - x^2) = x*f(y) - x*f(x)";
-    let (l, r, out) = run(eq, 120);
-    assert_eq!(out.status, "complete", "{}", eq);
-    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
-    got.sort();
-    assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}", eq);
+    for (eq, need_recip) in [("f(f(x*y) - 2*x^2) = x*f(y) - 2*x*f(x)", true), ("f(f(x*y) - x^2) = x*f(y) - x*f(x)", false)] {
+        let (l, r, out) = run(eq, 120);
+        assert_eq!(out.status, "complete", "{}", eq);
+        let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+        got.sort();
+        assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}", eq);
+        check_families(eq, &l, &r, &out);
+        if need_recip {
+            let used = out.stats.iter().find(|(k, _)| k == "recip_subst").map_or(0, |(_, v)| *v);
+            assert!(used > 0, "{}: 逆数の代入を使っていない", eq);
+        }
+    }
+}
+
+/// 規則の自己合成（self_compose_rules）: 1 変数の規則 f(f(x) + c) = x + d に x := f(x) + c を代入し、内側の f(f(x) + c) だけを
+/// x + d に書き換えて、平行移動 f(x + c + d) = f(x) + c + d を得る（外側から書き換えると 0 = 0 になる）。
+/// 問題集にない式（f(x f(x) + f(xy)) = x f(x) + xy の係数を変えたもの）で、P(1, x) の f(f(x) + 2f(1)) = x + 2f(1) から
+/// f(x + 4f(1)) = f(x) + 4f(1) が導かれること
+#[test]
+fn tactic_self_composition() {
+    let eq = "f(2*x*f(x) + f(x*y)) = 2*x*f(x) + x*y";
+    let (l, r, out) = run(eq, 20);
     check_families(eq, &l, &r, &out);
-    let used = out.stats.iter().find(|(k, _)| k == "recip_subst").map_or(0, |(_, v)| *v);
-    assert!(used > 0, "{}: 逆数の代入を使っていない", eq);
+    let (tl, tr) = parse_general("f(x + 4*f(1)) = f(x) + 4*f(1)").unwrap();
+    let want = tl.sub(&tr);
+    let k = &out.kernel;
+    let found = (0..k.num_facts()).filter_map(|i| k.fact_at(i)).any(|f| {
+        let c = k.clause(f);
+        c.lits().len() == 1 && {
+            let p = c.lits()[0].poly();
+            p == &want || p == &want.neg()
+        }
+    });
+    assert!(found, "{}: 平行移動 f(x + 4f(1)) = f(x) + 4f(1) が導かれていない", eq);
+    let used = out.stats.iter().find(|(k, _)| k == "self_compose").map_or(0, |(_, v)| *v);
+    assert!(used > 0, "{}: 規則の自己合成を使っていない", eq);
 }

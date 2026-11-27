@@ -223,7 +223,7 @@ impl Searcher {
                     }
                     if let Atom::F(t) = &r.lhs {
                         let t = (**t).clone();
-                        if t.vars().contains(&0) && t != x() && t.has_f() && poly_size(&t) <= 16 && !ts.contains(&t) {
+                        if t.has_var() && t != x() && t.has_f() && poly_size(&t) <= 16 && !ts.contains(&t) {
                             ts.push(t);
                         }
                     }
@@ -370,6 +370,44 @@ impl Searcher {
                         break;
                     }
                     self.try_instance(st, f, vec![sb], 1)?;
+                }
+            }
+            // 規則の自己合成（f(f(x) + c) = x + d から平行移動 f(x + c + d) = f(x) + c + d）
+            self.self_compose_rules(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
+            // 規則に導かれる代入（1 変数）: 1 変数の規則 f(T(x)) → …（T は x と f を含む）があれば、f(x) を含む 1 変数の事実で
+            // x := T(x) とし、f(T(x)) を書き換える（例: f(f(x) + c) = x + d に x := f(x) + c で f(x + c + d) = f(x) + c + d）
+            let mut ts: Vec<Poly> = Vec::new();
+            for r in &st.rules {
+                if r.nvars != 1 {
+                    continue;
+                }
+                if let Atom::F(t) = &r.lhs {
+                    let t = (**t).clone();
+                    if t.has_var() && t != x() && t.has_f() && poly_size(&t) <= 20 && !ts.contains(&t) {
+                        ts.push(t);
+                    }
+                }
+            }
+            ts.truncate(self.scaled(3));
+            if !ts.is_empty() {
+                let fx = x();
+                let mut cands: Vec<Fact> = ones.iter().copied().filter(|&f| f_atoms_with_vars(&self.e.poly0(f)).iter().any(|u| *u == fx)).collect();
+                cands.truncate(self.scaled(6));
+                for f in cands {
+                    for t in &ts {
+                        if self.closed(st) {
+                            return Ok(());
+                        }
+                        if !st.units.contains(&f) {
+                            break;
+                        }
+                        if self.try_instance(st, f, vec![t.clone()], 1)? {
+                            self.bump("rule_subst1");
+                        }
+                    }
                 }
             }
             for f in ones {
@@ -867,6 +905,58 @@ impl Searcher {
             }
         }
         Ok(Some(items))
+    }
+
+    /// 規則の自己合成: 1 変数の規則 f(T(x)) = R(x)（T は f(x) を含む）に x := T(x) を代入し、内側の f(T(x)) だけを R(x) に
+    /// 書き換える（外側から書き換えると 0 = 0 になるので、合同性で内側を明示的に置き換える）。
+    /// 例: f(f(x) + c) = x + d から f(x + c + d) = f(x) + c + d（平行移動）。導出: 例化・合同性・一次結合。
+    pub(crate) fn self_compose_rules(&mut self, st: &mut BState) -> Res<()> {
+        let rules: Vec<RwRule> = st
+            .rules
+            .iter()
+            .filter(|r| {
+                r.nvars == 1
+                    && matches!(&r.lhs, Atom::F(t) if **t != x() && poly_size(t) <= 20 && f_atoms_with_vars(t).iter().any(|u| *u == x()))
+            })
+            .cloned()
+            .collect();
+        for r in rules.into_iter().take(self.scaled(3)) {
+            if self.closed(st) {
+                return Ok(());
+            }
+            if !st.tried.insert(format!("selfc|{:?}", r.fact)) {
+                continue;
+            }
+            let t = match &r.lhs {
+                Atom::F(t) => (**t).clone(),
+                _ => continue,
+            };
+            let b = st.b;
+            let base = Poly::from_atom(r.lhs.clone()).sub(&r.rhs);
+            let (ei, lam) = match find_lit(self.e.clause(r.fact), &base) {
+                Some(v) => v,
+                None => continue,
+            };
+            let inst = self.e.k.instantiate(b, r.fact, vec![t.clone()], 1)?;
+            let pm = base.subst_vars(&[t.clone()]);
+            let (mi, mk) = match find_lit(self.e.clause(inst), &pm) {
+                Some(v) => v,
+                None => continue,
+            };
+            let items = match self.atom_replace_items(b, 1, &pm, &r.lhs, &r.rhs, r.fact, ei, &lam, 0)? {
+                Some(v) => v,
+                None => continue,
+            };
+            let mut its = vec![(Poly::constant(Q::one() / &mk), inst, mi)];
+            its.extend(items.into_iter().map(|(cf, fct, li)| (cf.neg(), fct, li)));
+            let cur = self.e.k.lincomb(b, 1, its)?;
+            if self.e.clause(cur).lits().iter().all(|l| l.poly().is_zero()) {
+                continue;
+            }
+            self.bump("self_compose");
+            self.e.add_fact(st, cur)?;
+        }
+        Ok(())
     }
 
     /// 逆数の代入 x := K/x（K は 0 でない有理数か、逆数のわかる閉じた式）: 1 変数の節（条件「x = 0」があってもよい）で
