@@ -144,32 +144,42 @@ impl Searcher {
                     return Ok(());
                 }
             }
-            self.remove_point_conditions(st)?;
-            if self.closed(st) {
-                return Ok(());
-            }
-            // 条件つきの事実を、条件が偽とわかっている点で例化する（安いので場合分けより先に）
-            self.discharge_conditions(st)?;
-            if self.closed(st) {
-                return Ok(());
-            }
-            self.affine_inverse_ones(st)?;
-            if self.closed(st) {
-                return Ok(());
-            }
-            // 単射性がわかっていれば、場合分けより先に当てはめる（選言の中も。安い）
-            if st.inj.is_some() {
-                self.apply_injectivity(st)?;
+            // 安い推論の伝播: 点の条件の除去、条件の外せる点での例化、逆数のわかる係数での 1 次の代入、単射性・零点の補題の
+            // 当てはめ（選言の中も）、1 変数の事実の零積を、新しい事実が出なくなるまで（最大 4 回）繰り返してから場合分けに進む
+            for _ in 0..4 {
+                let before = st.units.len() + st.others.len() + st.rules.len();
+                self.remove_point_conditions(st)?;
                 if self.closed(st) {
                     return Ok(());
                 }
-            }
-            // 零点の補題がわかっていれば、場合分けより先に当てはめる（安い）
-            if st.zinj.is_some() {
-                self.apply_zero_injectivity(st)?;
+                self.discharge_conditions(st)?;
                 if self.closed(st) {
                     return Ok(());
                 }
+                self.affine_inverse_ones(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+                if st.inj.is_some() {
+                    self.apply_injectivity(st)?;
+                    if self.closed(st) {
+                        return Ok(());
+                    }
+                }
+                if st.zinj.is_some() {
+                    self.apply_zero_injectivity(st)?;
+                    if self.closed(st) {
+                        return Ok(());
+                    }
+                }
+                self.zero_products(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+                if st.units.len() + st.others.len() + st.rules.len() == before {
+                    break;
+                }
+                self.bump("propagate_round");
             }
             // f が式 T の値で 0 になる事実があれば、零点の補題（f(t) = 0 ⇒ t = 0 か、f(k) = 0 となる k ≠ 0 があるか）を
             // 閉じた選言の場合分けより先に試す（否定側は f(k·x) = 0 から x := x/k で閉じることが多い）
