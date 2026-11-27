@@ -145,6 +145,11 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            // 条件つきの事実を、条件が偽とわかっている点で例化する（安いので場合分けより先に）
+            self.discharge_conditions(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             if depth < self.max_depth {
                 if self.try_split(st, depth)? {
                     return Ok(());
