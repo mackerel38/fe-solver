@@ -58,6 +58,7 @@
 | 引数を等しくする代入 | 2 つの f の引数の差が 1 次なら解く、v·(av + b) なら v で割って解く、係数が閉じた可逆な式なら逆数で解く | f(x² + x f(y)) = f(x²) + f(xy) など | 全体の計測 |
 | 分数の代入 | v := (v − r)/(c·w) など。逆数の公理で w ≠ 0 の場合、排中律と合同性で w = 0 の場合を作り、導出原理で ∀x,y の等式にする | f(x² + c·xy) = f(x)² + f(c·xy) など（y := y/x で帰着） | tactic_fraction_substitution |
 | 分母が一般の式の分数の代入 | f の引数が変数 v について 1 次で係数が他方の変数 w の式 a(w)（f(y) + y、f(x) − x など）なら、v := (v − r)/a(w)、v := −r/a(w)、2 つの引数の差についても同様。t = inv(a(w)) を含む式を a(w)·t = 1 で簡約し（主項の書き換え）、逆数の公理・合同性・一次結合で「a(w) = 0 ∨ E' = 0」（InvAxiom, Congruence, LinComb）。第 0 ラウンドから | f(xf(y) + xy) = xf(y) + xy（y ごとに x := x/(f(y) + y)）、f(x² + yf(x)) = f(x)² + f(xy)（y := x²/(x − f(x)) で各点の選言 f(x) ∈ {0, x}） | tactic_general_denominator_fraction |
+| 入れ子の引数を定数にする分数の代入 | f の引数（入れ子の中も含む）が c·xy なら v := K/(c·w)（K = 1, −1, この枝で f の値がわかる閉じた点）。w ≠ 0 の場合の合同性を入れ子の内側から作り（inv_items）、f の外に残る 1/w は両辺に w^k（k ≤ 2）を掛けて消す（逆数の公理で w^k·(1/w)^k = 1、LinComb）。w = 0 の場合は排中律で別に示す | P(x, 1/x)、f(s) = 0 の s で P(x, s/x)（f(x + f(xy)) = f(x) + y·f(x) など） | tactic_inner_constant_fraction |
 | 全射性の証人 | f(u(x)) = a·x + b なら v := u((v − b)/a) で f(v) を v にする。係数 a は 0 でない有理数か、逆数のわかる閉じた式（f(a) ≠ 0 の f(a) など）。2 変数の事実に加えて、x が f(x) を通してだけ現れる 1 変数の事実にも代入する | f(f(x) + …) 型、f(xf(x) + xf(y)) = f(x)² + yf(x)（f(a) ≠ 0 の点で y について 1 次） | tactic_surjectivity_chain |
 | f の外の部分を 0 にする代入 | v を引数に含む f を除いた部分を c₁·v + c₀ とみて、c₁ が定数でなく c₀ が c₁ で割り切れるなら v := −c₀/c₁ | f(x)² + y·f(x) = f(x)(y + f(x)) で y := −f(x) | tactic_surjectivity_chain |
 | 1 変数の事実の自己代入 | −x, 0, 1, f(x), ±x², −1, x ± 1 | 1 変数の事実の整理 | 全体の計測 |
