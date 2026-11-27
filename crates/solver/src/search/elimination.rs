@@ -5,7 +5,7 @@ use crate::engine::{coeff_of_atom, replace_atom, Added, BState, Engine, Res, RwR
 use crate::order::{atom_cmp, poly_size};
 use crate::polyutil::*;
 use fe_kernel::{AddFamily, AddKind, Atom, BranchId, Fact, Family, Kernel, Lit, Mono, Poly, Rel, Q};
-use num_traits::{One, Zero};
+use num_traits::{One, Signed, Zero};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
@@ -339,8 +339,128 @@ impl Searcher {
         }
     }
 
+    /// 閉じた u ≠ 0 の事実から「u² > 0」を作る（三分律 u > 0 ∨ u = 0 ∨ −u > 0、導出原理、不等式の積 2 回）。作ったものは枝で使い回す
+    pub(crate) fn square_positive(&mut self, st: &mut BState, u: &Poly) -> Res<Option<Fact>> {
+        if let Some((_, f)) = st.pos_sq.iter().find(|(v, _)| v == u) {
+            return Ok(Some(*f));
+        }
+        let ne = match st.nes.iter().copied().find(|&n| self.e.poly0(n) == *u || self.e.poly0(n) == u.neg()) {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+        let b = st.b;
+        let tri = self.e.k.trichotomy(b, 0, u.clone())?;
+        let ieq = match self.e.clause(tri).lits().iter().position(|l| *l == Lit::eq(u.clone())) {
+            Some(i) => i,
+            None => return Ok(None),
+        };
+        let c1 = self.e.k.resolve(b, tri, ieq, ne, 0)?;
+        let lits = self.e.clause(c1).lits().to_vec();
+        if lits.len() != 2 {
+            return Ok(None);
+        }
+        let c2 = self.e.k.mul_ineq(b, c1, 0, c1, 0)?;
+        // c2 は「u² > 0 ∨ （もう一方）」。もう一方のリテラルどうしを掛けて u² > 0 だけにする
+        let other = lits[1].clone();
+        let io = match self.e.clause(c2).lits().iter().position(|l| *l == other) {
+            Some(i) => i,
+            None => return Ok(None),
+        };
+        let c3 = self.e.k.mul_ineq(b, c2, io, c2, io)?;
+        let cl = self.e.clause(c3).clone();
+        if cl.lits().len() != 1 || cl.lits()[0].rel() != Rel::Gt || scale_ratio(cl.lits()[0].poly(), &u.mul(u)).is_none() {
+            return Ok(None);
+        }
+        self.bump("square_positive");
+        st.pos_sq.push((u.clone(), c3));
+        Ok(Some(c3))
+    }
+
+    /// 平方和の判定: q（変数を含んでよい）が「正の係数 × 平方」の和で、厳密に正の項（正の定数、または u ≠ 0 のわかる閉じた u の
+    /// u²）を少なくとも 1 つ含むなら「q > 0」を作る（PosComb）。−q がそうなら「−q > 0」。
+    pub(crate) fn prove_positive_sos(&mut self, st: &mut BState, q: &Poly) -> Res<Option<Fact>> {
+        for sgn in [Q::one(), -Q::one()] {
+            let qs = q.scale(&sgn);
+            let mut ineqs: Vec<(Q, Fact, usize)> = Vec::new();
+            let mut squares: Vec<(Q, Poly)> = Vec::new();
+            let mut eqs: Vec<(Poly, Fact, usize)> = Vec::new();
+            let mut constant = Q::zero();
+            let mut ok = true;
+            let qnv = qs.vars().iter().max().map_or(0, |m| m + 1);
+            let is_square = |m: &fe_kernel::Mono| m.factors().iter().all(|(_, e)| e % 2 == 0);
+            for (m, c) in qs.terms() {
+                if !c.is_positive() || !is_square(m) {
+                    // 2 項の単位等式 α·m + β·s = 0（s は平方の単項式、−cβ/α > 0）で c·m を平方に置き換える
+                    let mut replaced = false;
+                    for &u in &st.units {
+                        if self.e.nvars(u) > qnv {
+                            continue;
+                        }
+                        let pu = self.e.poly0(u);
+                        if pu.terms().len() != 2 {
+                            continue;
+                        }
+                        let (alpha, (sm, beta)) = match (pu.terms().iter().find(|(mm, _)| mm == m), pu.terms().iter().find(|(mm, _)| mm != m)) {
+                            (Some((_, a)), Some((sm, b))) => (a.clone(), (sm.clone(), b.clone())),
+                            _ => continue,
+                        };
+                        if !is_square(&sm) || sm.is_one() {
+                            continue;
+                        }
+                        let d = -(c * &beta) / &alpha;
+                        if !d.is_positive() {
+                            continue;
+                        }
+                        let mut base = Poly::one();
+                        for (a, e) in sm.factors() {
+                            base = base.mul(&Poly::from_atom(a.clone()).pow(e / 2));
+                        }
+                        eqs.push((Poly::constant(c / &alpha), u, 0));
+                        squares.push((d, base));
+                        replaced = true;
+                        break;
+                    }
+                    if replaced {
+                        continue;
+                    }
+                    ok = false;
+                    break;
+                }
+                if m.is_one() {
+                    constant = c.clone();
+                    continue;
+                }
+                let mut base = Poly::one();
+                for (a, e) in m.factors() {
+                    base = base.mul(&Poly::from_atom(a.clone()).pow(e / 2));
+                }
+                if !base.has_var() {
+                    if let Some(f) = self.square_positive(st, &base)? {
+                        let lp = self.e.clause(f).lits()[0].poly().clone();
+                        if let Some(k) = scale_ratio(&lp, &base.mul(&base)) {
+                            // lp = k·base²（k > 0）なので、係数 c/k を掛ける
+                            ineqs.push((c / &k, f, 0));
+                            continue;
+                        }
+                    }
+                }
+                squares.push((c.clone(), base));
+            }
+            if !ok || (ineqs.is_empty() && !constant.is_positive()) {
+                continue;
+            }
+            let f = self.e.k.pos_comb(st.b, qnv, ineqs, eqs, squares, constant, true)?;
+            self.bump("sos_positive");
+            return Ok(Some(f));
+        }
+        Ok(None)
+    }
+
     /// 1 変数（閉じた原子 1 つ）の 2 次式 q が常に正（または負）なら、事実「±q > 0」を作る
     pub(crate) fn prove_positive(&mut self, st: &mut BState, q: &Poly) -> Res<Option<Fact>> {
+        if let Some(f) = self.prove_positive_sos(st, q)? {
+            return Ok(Some(f));
+        }
         let atoms = q.top_atoms();
         if atoms.len() != 1 || q.has_var() {
             return Ok(None);

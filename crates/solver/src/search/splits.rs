@@ -234,6 +234,23 @@ impl Searcher {
         }
         points.sort_by_key(|k| poly_size(k));
         points.truncate(self.scaled(16));
+        // 1 変数の事実に現れる f の引数（変数を含む式）でも例化する（各点の選言を f(t) の t として使い、
+        // 規則での書き換えと正の値の判定で偽の側を外す。例: f(t) ∈ {0, t} と f(a² + x²) = a² + f(x)² から f(x)² = x²）
+        let mut vpoints: Vec<Poly> = Vec::new();
+        for &u in &st.units {
+            if self.e.nvars(u) != 1 {
+                continue;
+            }
+            for a in self.e.poly0(u).top_atoms() {
+                if let Atom::F(k) = &a {
+                    if k.has_var() && **k != x() && !k.has_f() && poly_size(k) <= 12 && !vpoints.contains(k) {
+                        vpoints.push((**k).clone());
+                    }
+                }
+            }
+        }
+        vpoints.sort_by_key(|k| poly_size(k));
+        vpoints.truncate(self.scaled(6));
         let mut made = 0;
         for (cf, _) in pcs {
             for k in &points {
@@ -250,6 +267,28 @@ impl Searcher {
                 made += 1;
                 let inst2 = self.e.k.instantiate(st.b, cf, vec![k.neg()], 0)?;
                 self.e.add_fact(st, inst2)?;
+            }
+            for k in &vpoints {
+                if made >= self.scaled(16) || self.closed(st) {
+                    return Ok(());
+                }
+                let key = format!("pwv|{:?}|{:x}", cf, hash_poly(k));
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let inst = self.e.k.instantiate(st.b, cf, vec![k.clone()], 1)?;
+                self.bump("pointwise_inst_var");
+                // 加えて規則で書き換わった後に、正の値（平方和）で偽のリテラルを外す
+                if let Added::New(nf) = self.e.add_fact(st, inst)? {
+                    if st.others.contains(&nf) {
+                        let nf2 = self.drop_rootless(st, nf)?;
+                        if nf2 != nf {
+                            self.bump("pointwise_var_dropped");
+                            self.e.add_fact(st, nf2)?;
+                        }
+                    }
+                }
+                made += 1;
             }
         }
         Ok(())
