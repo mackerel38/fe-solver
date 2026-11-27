@@ -18,6 +18,20 @@ fn pat_vars(p: &Poly) -> Vec<u32> {
 
 fn apply(p: &Poly, s: &[Option<Poly>]) -> Poly {
     let max = PAT + s.len() as u32;
+    // 値の決まったパターン変数を（入れ子の中も含めて）含まなければ、作り直さずにそのまま返す（結果は同じ）
+    let mut any = false;
+    p.visit_atoms(&mut |a| {
+        if !any {
+            if let Atom::Var(i) = a {
+                if *i >= PAT && *i < max && s[(*i - PAT) as usize].is_some() {
+                    any = true;
+                }
+            }
+        }
+    });
+    if !any {
+        return p.clone();
+    }
     // PAT 以上の変数だけを置き換える
     p.transform(&mut |a| match a {
         Atom::Var(i) if i >= PAT && i < max => match &s[(i - PAT) as usize] {
@@ -156,21 +170,41 @@ fn match_rec(p: &Poly, t: &Poly, s: &mut Vec<Option<Poly>>, depth: u32) -> bool 
 
 /// パターン（変数 Var(0..n)）を対象の多項式に照合し、代入を返す（使われない変数は 0）
 pub fn match_poly(pattern: &Poly, n: u32, target: &Poly) -> Option<Vec<Poly>> {
-    let p = shift_vars(pattern, PAT, n);
+    match_shifted(&shift_vars(pattern, PAT, n), n, target)
+}
+
+/// 変数を Var(PAT + i) に移したパターンを照合する（規則ごとに移したものを持っておき、照合のたびに移さない）
+pub fn match_shifted(p: &Poly, n: u32, target: &Poly) -> Option<Vec<Poly>> {
     let mut s: Vec<Option<Poly>> = vec![None; n as usize];
-    if !match_rec(&p, target, &mut s, 0) {
+    if !match_rec(p, target, &mut s, 0) {
         return None;
     }
     let out: Vec<Poly> = s.into_iter().map(|o| o.unwrap_or_else(Poly::zero)).collect();
-    if pattern.subst_vars(&out) != *target {
+    // パターンに代入を入れて対象と一致するか（元のパターンの subst_vars と同じ）
+    let filled: Vec<Option<Poly>> = out.iter().cloned().map(Some).collect();
+    if apply(p, &filled) != *target {
         return None;
     }
     Some(out)
 }
 
+/// 原子のパターンの変数を Var(PAT + i) に移す（match_atom_shifted に渡す形）
+pub fn shift_atom(a: &Atom, n: u32) -> Atom {
+    match a {
+        Atom::F(p) => Atom::F(std::rc::Rc::new(shift_vars(p, PAT, n))),
+        Atom::Inv(p) => Atom::Inv(std::rc::Rc::new(shift_vars(p, PAT, n))),
+        other => other.clone(),
+    }
+}
+
 pub fn match_atom(pattern: &Atom, n: u32, target: &Atom) -> Option<Vec<Poly>> {
+    match_atom_shifted(&shift_atom(pattern, n), n, target)
+}
+
+/// shift_atom で変数を移したパターンの照合
+pub fn match_atom_shifted(pattern: &Atom, n: u32, target: &Atom) -> Option<Vec<Poly>> {
     match (pattern, target) {
-        (Atom::F(p), Atom::F(t)) | (Atom::Inv(p), Atom::Inv(t)) => match_poly(p, n, t),
+        (Atom::F(p), Atom::F(t)) | (Atom::Inv(p), Atom::Inv(t)) => match_shifted(p, n, t),
         (Atom::Const(i), Atom::Const(j)) if i == j => Some(vec![Poly::zero(); n as usize]),
         _ => None,
     }
