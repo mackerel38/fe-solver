@@ -396,11 +396,11 @@ impl Searcher {
             return Ok(());
         }
         // 当てはめる相手は変数のない事実と小さい 1 変数の事実に限る。1 変数の事実を先に（変数のない事実が多いと予算を使い切って
-        // f(x f(x)) = f(x²) のような事実に届かないので）、予算は別々に（1 変数 scaled(20) 回、変数なし scaled(40) 回）
+        // f(x f(x)) = f(x²) のような事実に届かないので）、予算は別々に（1 変数 scaled(8) 回、変数なし scaled(32) 回。合計は以前と同じ。1 変数の予算を大きくすると当てはめが増えすぎる）
         let mut units: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) <= 1).collect();
         units.sort_by_key(|f| (1 - self.e.nvars(*f), poly_size(&self.e.poly0(*f))));
-        let mut budget1 = self.scaled(20);
-        let mut budget0 = self.scaled(40);
+        let mut budget1 = self.scaled(8);
+        let mut budget0 = self.scaled(32);
         for u in units {
             let one = self.e.nvars(u) == 1;
             if (one && budget1 == 0) || (!one && budget0 == 0) {
