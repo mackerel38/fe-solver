@@ -597,6 +597,77 @@ impl Searcher {
         Ok(true)
     }
 
+    /// 条件の外せる点での例化: 2 つ以上のリテラルをもつ事実で、1 つの変数 w だけを含む等式リテラル p(w) = 0 について、
+    /// この枝の閉じた ≠ の事実 u ≠ 0 に現れる定数 K で p(K) が u の定数倍になるなら、w := K と例化する
+    /// （追加時に既知の ≠ の事実でそのリテラルが外れる）。例: 「f(x) = 0 ∨ f(y) = y + f(x) − x」と f(a) ≠ 0 から f(y) = y + f(a) − a。
+    pub(crate) fn discharge_conditions(&mut self, st: &mut BState) -> Res<()> {
+        if st.nes.is_empty() {
+            return Ok(());
+        }
+        let nes: Vec<Poly> = st.nes.iter().map(|&n| self.e.poly0(n)).collect();
+        let mut ks: BTreeSet<u32> = BTreeSet::new();
+        for u in &nes {
+            ks.extend(u.consts());
+        }
+        let cands: Vec<Fact> = st
+            .others
+            .iter()
+            .copied()
+            .filter(|&f| {
+                let c = self.e.clause(f);
+                c.nvars() >= 1 && c.lits().len() >= 2
+            })
+            .collect();
+        let mut made = 0;
+        for f in cands {
+            if made >= self.scaled(12) || self.closed(st) {
+                return Ok(());
+            }
+            if !st.others.contains(&f) {
+                continue;
+            }
+            let c = self.e.clause(f).clone();
+            for l in c.lits() {
+                if l.rel() != Rel::Eq {
+                    continue;
+                }
+                let vs = l.poly().vars();
+                if vs.len() != 1 {
+                    continue;
+                }
+                let w = *vs.iter().next().unwrap();
+                for &k in ks.iter().take(4) {
+                    let mut sub: Vec<Poly> = Vec::new();
+                    let mut nxt = 0u32;
+                    for i in 0..c.nvars() {
+                        if i == w {
+                            sub.push(Poly::cnst(k));
+                        } else {
+                            sub.push(Poly::var(nxt));
+                            nxt += 1;
+                        }
+                    }
+                    let pk = l.poly().subst_vars(&sub);
+                    if !nes.iter().any(|u| scale_ratio(u, &pk).is_some()) {
+                        continue;
+                    }
+                    let key = format!("dc|{:?}|{}|{}", f, w, k);
+                    if !st.tried.insert(key) {
+                        continue;
+                    }
+                    let inst = self.e.k.instantiate(st.b, f, sub, nxt)?;
+                    self.bump("discharge_cond");
+                    self.e.add_fact(st, inst)?;
+                    made += 1;
+                    if self.closed(st) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 条件つきの事実を整える: 1 つの変数しか使わない 2 変数の節は 1 変数にし（Instantiate）、
     /// 等式リテラルの単項式の因子を零積の規則で分ける（f(x)² = 0 → f(x) = 0、x·f(x) = 0 → x = 0 ∨ f(x) = 0）。
     pub(crate) fn tidy_clause(&mut self, st: &mut BState, f: Fact) -> Res<Fact> {

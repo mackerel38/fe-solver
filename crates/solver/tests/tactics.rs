@@ -113,3 +113,16 @@ fn tactic_general_denominator_fraction() {
         check_families(eq, &l, &r, &out);
     }
 }
+
+/// 条件の外せる点での例化: 「f(x) = 0 ∨ f(y) − y = f(x) − x」のような条件つきの事実を、f(a) ≠ 0 のわかっている点 a で例化して
+/// 無条件の事実 f(y) = y + f(a) − a にする。f(x + k·y·f(x)) = f(x) + k·y·f(x) の型（解は 0 と x + c）
+#[test]
+fn tactic_discharge_conditions() {
+    for eq in ["f(x + 2*y*f(x)) = f(x) + 2*y*f(x)", "f(x - y*f(x)) = f(x) - y*f(x)"] {
+        let (l, r, out) = run(eq, 30);
+        assert_eq!(out.status, "complete", "{}", eq);
+        assert!(out.families.iter().any(|f| f.params().len() == 1 && f.template().vars().contains(&0)), "{}: x + c の族がない {:?}", eq, out.families.iter().map(|f| f.template().to_string()).collect::<Vec<_>>());
+        assert!(out.families.iter().any(|f| f.template().to_string() == "0"), "{}: 0 がない", eq);
+        check_families(eq, &l, &r, &out);
+    }
+}
