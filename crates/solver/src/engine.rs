@@ -689,6 +689,25 @@ impl Engine {
         if c.nvars() > 0 && c.lits().iter().map(|l| crate::order::poly_size(l.poly())).sum::<u32>() > self.size_cap {
             return Ok(Added::Trivial);
         }
+        // c·a^k = 0（1 つの原子のべき、k ≥ 2、変数は 1 つまで）は零積の規則で a = 0 にしてから加える
+        // （例: f(0)⁴ = 0 から f(0) = 0。べきの規則として残すと f(0) = 0 が使えない）
+        if c.lits().len() == 1 && c.lits()[0].rel() == Rel::Eq && c.nvars() <= 1 {
+            let p = c.lits()[0].poly();
+            if p.terms().len() == 1 {
+                let (m, coef) = &p.terms()[0];
+                if m.factors().len() == 1 && m.factors()[0].1 >= 2 {
+                    let (a, k) = &m.factors()[0];
+                    let ap = Poly::from_atom(a.clone());
+                    let mut fs = vec![ap.scale(coef)];
+                    for _ in 1..*k {
+                        fs.push(ap.clone());
+                    }
+                    if let Ok(z) = self.k.zero_product(st.b, f, 0, fs) {
+                        return self.add_fact(st, z);
+                    }
+                }
+            }
+        }
         st.keys.insert(key.clone());
         if c.lits().len() == 1 && c.lits()[0].rel() == Rel::Eq {
             // 左辺が f(a·x + b)（b は閉じた式, (a,b) ≠ (1,0)）の規則は x → (x − b)/a で f(x) の形に直す

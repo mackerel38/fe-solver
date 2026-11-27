@@ -183,6 +183,14 @@ impl Searcher {
                     return Ok(());
                 }
             }
+            // 条件つきの単射性（f(y) = f(x) なら Q(x, y)）も、場合分けより先に当てはめる（導出原理だけで安い。
+            // 例: f(y) = f(x) なら y² = x² を f(f(0)²) = f(0) や f(x f(x)) = f(x²) に当てはめる）
+            if round >= 1 && !st.cinj.is_empty() {
+                self.apply_cond_injectivity(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+            }
             // f が式 T の値で 0 になる事実があれば、零点の補題（f(t) = 0 ⇒ t = 0 か、f(k) = 0 となる k ≠ 0 があるか）を
             // 閉じた選言の場合分けより先に試す（否定側は f(k·x) = 0 から x := x/k で閉じることが多い）
             if depth <= 5 && st.inj.is_none() && st.zinj.is_none() && !st.tried.contains("zinj") && self.has_zero_image(st) {
