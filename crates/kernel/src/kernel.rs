@@ -67,6 +67,7 @@ pub enum Rule {
     Merge { parent: BranchId, facts: Vec<Option<Fact>> },
     CauchyBounded { additive: Fact, bound: Fact },
     AffineXY { premise: Fact },
+    AffineFF { premise: Fact },
     ImportLemma { premise: Fact, lemma: std::rc::Rc<Kernel> },
 }
 
@@ -798,6 +799,73 @@ impl Kernel {
         let concl = Poly::f(x.clone()).sub(&f1.sub(&f0).mul(&x)).sub(&f0);
         let out = Clause::new(1, vec![Lit::eq(concl)])?;
         Ok(self.push(out, target, Rule::AffineXY { premise }))
+    }
+
+    /// 規則 AffineFF（既知の型 f(c·f(x)f(y) + g(x)) = d·y·f(x) + h(x) の解は 1 次関数）:
+    /// 前提が単位等式「∀x,y. λ(f(c·f(u)·f(v) + G) − d·v·f(u) − H) = 0」（c, d は 0 でない有理数、(u, v) は (x, y) か (y, x)、
+    /// G・H は v を含まない）なら「∀x. f(x) − (f(1) − f(0))·x − f(0) = 0」。
+    /// 根拠: f ≡ 0 なら結論は自明。そうでなければ f(a) ≠ 0 となる a がある。P(a, y): f(c f(a) f(y) + G(a)) = d f(a) y + H(a) の
+    /// 右辺は y のすべての実数値をとるので f は全射、左辺は f(y) で決まるので f は単射。逆関数 φ は
+    /// φ(z) = (f(c f(a) z + G(a)) − H(a))/(d f(a))。f(x) ≠ 0 の x と任意の w で y = φ(w/(c f(x))) とすると
+    /// f(w + G(x)) = d f(x) φ(w/(c f(x))) + H(x)。t = f(x)/f(a)、w = t(v − G(a)) とおけば
+    /// f(t v + G(x) − t G(a)) = t f(v) + H(x) − t H(a)。f は全単射なので t は 0 以外のすべての実数をとり、x は t で決まる。
+    /// よって「t ≠ 0 で f(t v + G̃(t)) = t f(v) + K(t)」となり、AffineXY（前提が t ≠ 0 でだけ成り立つ形）により f は 1 次。
+    pub fn affine_ff(&mut self, target: BranchId, premise: Fact) -> R<Fact> {
+        self.check_branch(target)?;
+        let c = self.premise(premise, target)?.clone();
+        if c.lits().len() != 1 || c.lits()[0].rel() != Rel::Eq || c.nvars() != 2 {
+            return Err("AffineFF の前提は 2 変数の単位等式".into());
+        }
+        if !Self::is_affine_ff_form(c.lits()[0].poly()) {
+            return Err("f(c·f(x)f(y) + g(x)) − d·y·f(x) − h(x) の形でない".into());
+        }
+        let x = Poly::var(0);
+        let f0 = Poly::f(Poly::zero());
+        let f1 = Poly::f(Poly::one());
+        let concl = Poly::f(x.clone()).sub(&f1.sub(&f0).mul(&x)).sub(&f0);
+        let out = Clause::new(1, vec![Lit::eq(concl)])?;
+        Ok(self.push(out, target, Rule::AffineFF { premise }))
+    }
+
+    /// p が λ(f(c·f(u)·f(v) + G) − d·v·f(u) − H)（c, d ≠ 0、G, H は v を含まない）の形か
+    fn is_affine_ff_form(p: &Poly) -> bool {
+        for (u, v) in [(0u32, 1u32), (1, 0)] {
+            let fufv = Poly::f(Poly::var(u)).mul(&Poly::f(Poly::var(v)));
+            let vfu = Poly::var(v).mul(&Poly::f(Poly::var(u)));
+            for (m, lam) in p.terms() {
+                if m.factors().len() != 1 || m.factors()[0].1 != 1 {
+                    continue;
+                }
+                let arg = match &m.factors()[0].0 {
+                    Atom::F(a) => (**a).clone(),
+                    _ => continue,
+                };
+                let cc = match arg.terms().iter().find(|(mm, _)| *mm == fufv.terms()[0].0) {
+                    Some((_, cc)) => cc.clone(),
+                    None => continue,
+                };
+                let g = arg.sub(&fufv.scale(&cc));
+                if g.vars().contains(&v) {
+                    continue;
+                }
+                let q = p.scale(&(Q::one() / lam));
+                let rest = q.sub(&Poly::f(arg.clone()));
+                // rest = −d·v·f(u) − H
+                let d = match rest.terms().iter().find(|(mm, _)| *mm == vfu.terms()[0].0) {
+                    Some((_, dd)) => -dd.clone(),
+                    None => continue,
+                };
+                if d.is_zero() {
+                    continue;
+                }
+                let h = rest.add(&vfu.scale(&d));
+                if h.vars().contains(&v) {
+                    continue;
+                }
+                return true;
+            }
+        }
+        false
     }
 
     /// p が λ(f(a·u·v + G) − a·u·f(v) − H)（G, H は v を含まない）の形なら u を返す

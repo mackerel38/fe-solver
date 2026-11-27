@@ -279,3 +279,16 @@ fn tactic_sign_reasoning_sos() {
     assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
     check_families(eq, &l, &r, &out);
 }
+
+/// 既知の型 AffineFF: f(c·f(x)f(y) + g(x)) = d·y·f(x) + h(x) なら f は 1 次（f は全単射になり、逆関数で変数を取り替えると
+/// AffineXY の型に帰着する）。問題集にない係数の方程式
+#[test]
+fn tactic_affine_ff_type() {
+    let eq = "f(2*f(x)*f(y) + x^2) = 2*y*f(x) + x^2";
+    let (l, r, out) = run(eq, 30);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    got.sort();
+    assert!(!got.is_empty(), "{}: 解がない", eq);
+    check_families(eq, &l, &r, &out);
+}

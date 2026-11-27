@@ -270,7 +270,7 @@ fn premises(r: &Rule) -> Vec<Fact> {
         }
         Rule::Merge { facts, .. } => facts.iter().flatten().copied().collect(),
         Rule::CauchyBounded { additive, bound } => vec![*additive, *bound],
-        Rule::AffineXY { premise } => vec![*premise],
+        Rule::AffineXY { premise } | Rule::AffineFF { premise } => vec![*premise],
         Rule::ImportLemma { premise, .. } => vec![*premise],
     }
 }
@@ -468,6 +468,10 @@ impl<'a> Ctx<'a> {
             ),
             Rule::AffineXY { premise } => format!(
                 "{} は f(xy + g(x)) = x f(y) + h(x) の型（g, h は x だけの式）であり、この型の解は 1 次関数に限るので",
+                self.lbl(*premise)
+            ),
+            Rule::AffineFF { premise } => format!(
+                "{} は f(f(x)f(y) + g(x)) = y f(x) + h(x) の型（g, h は x だけの式）であり、この型の解は 1 次関数に限るので（f は全単射になり、逆関数で変数を取り替えると f(xy + g(x)) = x f(y) + h(x) の型に帰着する）",
                 self.lbl(*premise)
             ),
             Rule::ImportLemma { premise, lemma } => format!(
