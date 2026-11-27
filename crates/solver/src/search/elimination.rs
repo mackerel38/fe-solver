@@ -18,9 +18,20 @@ impl Searcher {
         if rows_in.len() < 2 {
             return Ok(());
         }
-        type Row = (BTreeMap<Mono, Q>, Vec<(Q, Fact)>);
-        let mut basis: Vec<(Mono, Row)> = Vec::new();
-        let lead = |r: &BTreeMap<Mono, Q>| -> Option<Mono> { r.keys().max_by(|a, b| prio_cmp(a, b)).cloned() };
+        // 単項式に番号を振り（優先度の順、同じ優先度なら単項式の順）、行は番号 → 係数で持つ（入れ子の式の比較を避ける）。
+        // 先頭の項（優先度が最大、同じなら単項式の順で最後）は番号の最大と一致するので、結果は単項式のまま行う場合と同じ
+        let mut all: Vec<Mono> = Vec::new();
+        for f in &rows_in {
+            for (m, _) in self.e.poly0(*f).terms() {
+                all.push(m.clone());
+            }
+        }
+        all.sort_by(|a, b| prio_cmp(a, b).then_with(|| a.cmp(b)));
+        all.dedup();
+        let id_of: std::collections::HashMap<Mono, u32> = all.iter().enumerate().map(|(i, m)| (m.clone(), i as u32)).collect();
+        type Row = (BTreeMap<u32, Q>, Vec<(Q, Fact)>);
+        let mut basis: Vec<(u32, Row)> = Vec::new();
+        let lead = |r: &BTreeMap<u32, Q>| -> Option<u32> { r.keys().next_back().copied() };
         let sub = |r: &mut Row, other: &Row, k: &Q| {
             for (m, c) in &other.0 {
                 let e = r.0.entry(m.clone()).or_insert_with(Q::zero);
@@ -33,7 +44,7 @@ impl Searcher {
         };
         for f in &rows_in {
             let p = self.e.poly0(*f);
-            let mut row: Row = (p.terms().iter().cloned().collect(), vec![(Q::one(), *f)]);
+            let mut row: Row = (p.terms().iter().map(|(m, c)| (id_of[m], c.clone())).collect(), vec![(Q::one(), *f)]);
             // 既存の軸で簡約
             loop {
                 let mut changed = false;
@@ -69,13 +80,13 @@ impl Searcher {
         }
         let known: BTreeSet<Poly> = rows_in.iter().map(|f| self.e.poly0(*f)).collect();
         let mut made = 0;
-        let mut cands: Vec<(Mono, Row)> = basis.into_iter().filter(|(pm, _)| mclass(pm) <= 1).collect();
+        let mut cands: Vec<(Mono, Row)> = basis.into_iter().map(|(id, row)| (all[id as usize].clone(), row)).filter(|(pm, _)| mclass(pm) <= 1).collect();
         cands.sort_by(|a, b| prio_cmp(&a.0, &b.0));
         for (_, (row, combo)) in cands {
             if made >= 12 {
                 break;
             }
-            let p = Poly::from_terms(row.into_iter().collect());
+            let p = Poly::from_terms(row.into_iter().map(|(id, c)| (all[id as usize].clone(), c)).collect());
             if p.is_zero() || known.contains(&p.monic()) || combo.len() < 2 {
                 continue;
             }
