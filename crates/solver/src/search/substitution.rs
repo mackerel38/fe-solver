@@ -226,7 +226,19 @@ impl Searcher {
                 self.try_instance(st, g, s, 2)?;
             }
             // 分数の代入（v := (v − r)/(c·w) など）。分母が一般の式のもの（条件つきの事実を 1 つ作るだけ）は第 0 ラウンドから
-            for (v, sv, den) in self.inverse_substs(&p) {
+            let mut ks: Vec<Poly> = vec![Poly::one(), Poly::int(-1)];
+            for &u in &st.units {
+                if self.e.nvars(u) == 0 {
+                    for a in self.e.poly0(u).top_atoms() {
+                        if let Atom::F(k) = &a {
+                            if k.terms().len() == 1 && k.as_const().is_none() && !k.has_f() && !ks.contains(k) && ks.len() < 4 {
+                                ks.push((**k).clone());
+                            }
+                        }
+                    }
+                }
+            }
+            for (v, sv, den) in self.inverse_substs(&p, &ks) {
                 if self.closed(st) || !st.units.contains(&g) {
                     break;
                 }
@@ -356,7 +368,9 @@ impl Searcher {
     /// v := (v − r)/(c·w)（u を v にする）と v := −r/(c·w)（u を 0 にする）。2 つの引数の差についても同様（引数を等しくする）。
     /// 係数が他方の変数の一般の式 a(w)（f(x) − x など）の場合も、a(w) ≠ 0 の点についての代入 v := (v − r)/a(w)、
     /// v := −r/a(w) を候補にする（分母 a(w) を返す。結論は「a(w) = 0 ∨ …」の形になる）。
-    pub(crate) fn inverse_substs(&self, p: &Poly) -> Vec<(u32, Poly, Poly)> {
+    /// f の引数（入れ子の中も含む）が c·x·y のときは、v := K/(c·w)（K は 1, −1 と、この枝で f の値がわかる閉じた点）で
+    /// 引数を定数 K にする候補も作る（P(x, 1/x)、f(s) = 0 の s で P(x, s/x) など）。
+    pub(crate) fn inverse_substs(&self, p: &Poly, ks: &[Poly]) -> Vec<(u32, Poly, Poly)> {
         let mut atoms: Vec<Poly> = Vec::new();
         for a in p.top_atoms() {
             if let Atom::F(u) = &a {
@@ -411,9 +425,28 @@ impl Searcher {
                 }
             }
         }
+        let mut inn: Vec<(u32, Poly, Poly)> = Vec::new();
+        for u in f_atoms_with_vars(p) {
+            let c = match u.terms() {
+                [(m, c)] if m.factors().len() == 2 && m.factors().iter().all(|(a, e)| *e == 1 && matches!(a, Atom::Var(_))) => c.clone(),
+                _ => continue,
+            };
+            for v in 0..2u32 {
+                let w = 1 - v;
+                let iw = Poly::inv(Poly::var(w)).scale(&(Q::one() / &c));
+                for k in ks {
+                    let sv = k.mul(&iw);
+                    if !out.iter().chain(inn.iter()).any(|(v2, s2, _)| *v2 == v && *s2 == sv) {
+                        inn.push((v, sv, Poly::var(w)));
+                    }
+                }
+            }
+        }
         out.truncate(self.scaled(6));
         gen.truncate(self.scaled(4));
+        inn.truncate(self.scaled(4));
         out.extend(gen);
+        out.extend(inn);
         out
     }
 
@@ -502,6 +535,24 @@ impl Searcher {
             Some(q) => q,
             None => return Ok(false),
         };
+        // inv(w) が f の引数の外にだけ残るなら、両辺に w^k を掛けて消す（w ≠ 0 の場合の式なので同値。分母が変数のときだけ）
+        let iwa = Atom::Inv(std::rc::Rc::new(Poly::var(w)));
+        let mut wk: Option<Poly> = None;
+        let mut p2 = p1.clone();
+        if p1.has_inv() && !general {
+            let inner_inv = f_atoms_with_vars(&p1).iter().any(|u| u.has_inv());
+            let k = p1.terms().iter().map(|(m, _)| m.factors().iter().filter(|(a, _)| *a == iwa).map(|(_, e)| *e).sum::<u32>()).max().unwrap_or(0);
+            if !inner_inv && k >= 1 && k <= 2 {
+                let m = Poly::var(w).pow(k);
+                let e2 = cancel_inv(&p1.mul(&m), w);
+                if !e2.has_inv() {
+                    p2 = e2;
+                    wk = Some(m);
+                }
+            }
+        }
+        let p1_raw = p1;
+        let p1 = p2;
         if p1.has_inv() || p1 == p || p1.is_zero() || poly_size(&p1) > self.e.size_cap {
             return Ok(false);
         }
@@ -519,37 +570,23 @@ impl Searcher {
             None => return Ok(false),
         };
         let mut items: Vec<(Poly, Fact, usize)> = vec![(Poly::constant(Q::one() / &k0), inst, 0)];
-        let mut cur = p.clone();
-        for a in p.top_atoms() {
-            if let Atom::F(u) = &a {
-                let u1 = match red(u) {
-                    Some(q) => q,
+        // p − E を「w = 0 ∨ …」の事実の一次結合で表す（入れ子の f の中も内側から合同性で）
+        let diff = match self.inv_items(b, &p, general, w, &wv, &one_minus, ax, ia, &ka, 0)? {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+        items.extend(diff.into_iter().map(|(c, f, i)| (c.neg(), f, i)));
+        // w^k を掛けた場合: 各項目の係数に w^k を掛け、w^k·E − E'（(w·inv(w) − 1) の倍数）を逆数の公理で引く
+        if let Some(m) = &wk {
+            items = items.into_iter().map(|(c, f, i)| (c.mul(m), f, i)).collect();
+            let rest2 = p1_raw.mul(m).sub(&p1);
+            if !rest2.is_zero() {
+                match crate::polyutil::exact_div(&rest2, &one_minus) {
+                    Some(r) => items.push((r.scale(&(-Q::one() / &ka)), ax, ia)),
                     None => return Ok(false),
-                };
-                if u1 == **u {
-                    continue;
                 }
-                let m = match crate::polyutil::exact_div(&(**u).sub(&u1), &one_minus) {
-                    Some(m) => m,
-                    None => return Ok(false),
-                };
-                let cg = self.e.k.congruence(b, 2, u1.clone(), vec![(m.scale(&(Q::one() / &ka)), ax, ia)])?;
-                let target = Poly::from_atom(a.clone()).sub(&Poly::f(u1.clone()));
-                let (ic, kc) = match find_lit(self.e.clause(cg), &target) {
-                    Some(t) => t,
-                    None => return Ok(false),
-                };
-                let (cur2, q) = replace_atom(&cur, &a, &Poly::f(u1));
-                items.push((q.scale(&(-Q::one() / &kc)), cg, ic));
-                cur = cur2;
             }
-        }
-        let rest = cur.sub(&p1);
-        if !rest.is_zero() {
-            match crate::polyutil::exact_div(&rest, &one_minus) {
-                Some(r) => items.push((r.scale(&(-Q::one() / &ka)), ax, ia)),
-                None => return Ok(false),
-            }
+            self.bump("invsub_mul");
         }
         let ca = self.e.k.lincomb(b, 2, items)?;
         if general {
@@ -617,6 +654,72 @@ impl Searcher {
             }
         }
         Ok(())
+    }
+
+    /// t − red(t)（red は w·inv(w) = 1 での簡約）を、逆数の公理「w = 0 ∨ w·inv(w) − 1 = 0」と、そこから合同性で作る
+    /// 「w = 0 ∨ f(u) − f(red(u)) = 0」の一次結合で表す項目（Σ 係数·保存形 = t − red(t)）。入れ子の f は内側から作る。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn inv_items(
+        &mut self,
+        b: BranchId,
+        t: &Poly,
+        general: bool,
+        w: u32,
+        wv: &Poly,
+        one_minus: &Poly,
+        ax: Fact,
+        ia: usize,
+        ka: &Q,
+        depth: u32,
+    ) -> Res<Option<Vec<(Poly, Fact, usize)>>> {
+        if depth > 4 {
+            return Ok(None);
+        }
+        let red = |q: &Poly| -> Option<Poly> {
+            if general {
+                reduce_inv(q, wv)
+            } else {
+                Some(cancel_inv(q, w))
+            }
+        };
+        let t1 = match red(t) {
+            Some(q) => q,
+            None => return Ok(None),
+        };
+        let mut items: Vec<(Poly, Fact, usize)> = Vec::new();
+        let mut cur = t.clone();
+        for a in t.top_atoms() {
+            if let Atom::F(u) = &a {
+                let u1 = match red(u) {
+                    Some(q) => q,
+                    None => return Ok(None),
+                };
+                if u1 == **u {
+                    continue;
+                }
+                let inner = match self.inv_items(b, u, general, w, wv, one_minus, ax, ia, ka, depth + 1)? {
+                    Some(v) => v,
+                    None => return Ok(None),
+                };
+                let cg = self.e.k.congruence(b, 2, u1.clone(), inner)?;
+                let target = Poly::from_atom(a.clone()).sub(&Poly::f(u1.clone()));
+                let (ic, kc) = match find_lit(self.e.clause(cg), &target) {
+                    Some(t) => t,
+                    None => return Ok(None),
+                };
+                let (cur2, q) = replace_atom(&cur, &a, &Poly::f(u1));
+                items.push((q.scale(&(Q::one() / &kc)), cg, ic));
+                cur = cur2;
+            }
+        }
+        let rest = cur.sub(&t1);
+        if !rest.is_zero() {
+            match crate::polyutil::exact_div(&rest, one_minus) {
+                Some(r) => items.push((r.scale(&(Q::one() / ka)), ax, ia)),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(items))
     }
 
     /// 条件の外せる点での例化: 2 つ以上のリテラルをもつ事実で、1 つの変数 w だけを含む等式リテラル p(w) = 0 について、

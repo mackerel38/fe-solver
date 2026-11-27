@@ -141,3 +141,17 @@ fn tactic_zero_lemma_chain() {
         check_families(eq, &l, &r, &out);
     }
 }
+
+/// 入れ子の引数を定数にする分数の代入と、分母を払う変形: f の中の f(c·xy) について y := K/(c·x)（K = 1 や f(K) = 0 の点）とし、
+/// f の外に残る 1/x は両辺に x を掛けて消す（x ≠ 0 の場合の式）。入れ子の f の中の x·(1/x) は内側から合同性で 1 にする。
+/// f(x + f(c·xy)) = f(x) + c·y·f(x) の型
+#[test]
+fn tactic_inner_constant_fraction() {
+    let eq = "f(x + f(2*x*y)) = f(x) + 2*y*f(x)";
+    let (l, r, out) = run(eq, 60);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    got.sort();
+    assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+}
