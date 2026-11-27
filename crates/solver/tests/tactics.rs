@@ -292,3 +292,18 @@ fn tactic_affine_ff_type() {
     assert!(!got.is_empty(), "{}: 解がない", eq);
     check_families(eq, &l, &r, &out);
 }
+
+/// 逆数の代入 x := K/x（reciprocal_instances）: 「x ≠ 0 ならば x·f(b/x) = …」の形の事実で f の引数の b/x を消す。
+/// 問題集にない式（f(f(xy) + x²) = x f(x) + x f(y) の符号を変えたもの）で確かめる。
+#[test]
+fn tactic_reciprocal_substitution() {
+    let eq = "f(f(x*y) - x^2) = x*f(y) - x*f(x)";
+    let (l, r, out) = run(eq, 120);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let mut got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    got.sort();
+    assert_eq!(got, vec!["0".to_string(), "x".to_string()], "{}", eq);
+    check_families(eq, &l, &r, &out);
+    let used = out.stats.iter().find(|(k, _)| k == "recip_subst").map_or(0, |(_, v)| *v);
+    assert!(used > 0, "{}: 逆数の代入を使っていない", eq);
+}

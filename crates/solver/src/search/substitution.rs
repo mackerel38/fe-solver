@@ -626,7 +626,21 @@ impl Searcher {
         }
         let p1_raw = p1;
         let p1 = p2;
-        if p1.has_inv() || p1 == p || p1.is_zero() || poly_size(&p1) > self.e.size_cap {
+        // 逆数が f の引数の中にだけ残る場合は、条件つきの事実「w = 0 ∨ E' = 0」（E' は f の引数に 1/w を含む）として持つ
+        // ただし逆数の代入（reciprocal_instances）で消せる形、つまり逆数を含む f の引数がちょうど K/x（K は変数を含まない）のときだけ
+        let inner_only = p1.has_inv()
+            && p1.terms().iter().all(|(m, _)| m.factors().iter().all(|(a, _)| !matches!(a, Atom::Inv(_))))
+            && f_atoms_with_vars(&p1).iter().filter(|u| u.has_inv()).all(|u| {
+                u.terms().len() == 1 && {
+                    let (m, _) = &u.terms()[0];
+                    let invs: Vec<_> = m.factors().iter().filter(|(a, _)| matches!(a, Atom::Inv(_))).collect();
+                    invs.len() == 1
+                        && invs[0].1 == 1
+                        && matches!(&invs[0].0, Atom::Inv(q) if q.terms().len() == 1 && matches!(q.terms()[0].0.factors(), [(Atom::Var(_), 1)]))
+                        && m.factors().iter().all(|(a, _)| matches!(a, Atom::Inv(_)) || !Poly::from_atom(a.clone()).has_var())
+                }
+            });
+        if (p1.has_inv() && !inner_only) || p1 == p || p1.is_zero() || poly_size(&p1) > self.e.size_cap {
             return Ok(false);
         }
         self.bump("invsub_try");
@@ -662,6 +676,12 @@ impl Searcher {
             self.bump("invsub_mul");
         }
         let ca = self.e.k.lincomb(b, 2, items)?;
+        if inner_only {
+            self.bump("invsub_inner");
+            let ca = self.tidy_clause(st, ca)?;
+            self.e.add_fact(st, ca)?;
+            return Ok(true);
+        }
         if general {
             self.bump("invsub_gen");
             let ca = self.tidy_clause(st, ca)?;
@@ -795,6 +815,233 @@ impl Searcher {
         Ok(Some(items))
     }
 
+    /// t − t'（t' は t の原子 a を値 val に置き換えたもの。f の引数の中も）を、節 eqf のリテラル ei（λ(a − val) = 0 の形、
+    /// 係数 lam）と、そこから合同性で作る事実の一次結合で表す項目（Σ 係数·保存形 = t − t'）。扱えなければ None。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn atom_replace_items(
+        &mut self,
+        b: BranchId,
+        nv: u32,
+        t: &Poly,
+        a: &Atom,
+        val: &Poly,
+        eqf: Fact,
+        ei: usize,
+        lam: &Q,
+        depth: u32,
+    ) -> Res<Option<Vec<(Poly, Fact, usize)>>> {
+        if depth > 4 {
+            return Ok(None);
+        }
+        let red = |q: &Poly| q.transform(&mut |x| if x == *a { val.clone() } else { Poly::from_atom(x) });
+        let diff_lit = Poly::from_atom(a.clone()).sub(val);
+        let t1 = red(t);
+        let mut items: Vec<(Poly, Fact, usize)> = Vec::new();
+        let mut cur = t.clone();
+        for at in t.top_atoms() {
+            if let Atom::F(u) = &at {
+                let u1 = red(u);
+                if u1 == **u {
+                    continue;
+                }
+                let inner = match self.atom_replace_items(b, nv, u, a, val, eqf, ei, lam, depth + 1)? {
+                    Some(v) => v,
+                    None => return Ok(None),
+                };
+                let cg = self.e.k.congruence(b, nv, u1.clone(), inner)?;
+                let target = Poly::from_atom(at.clone()).sub(&Poly::f(u1.clone()));
+                let (ic, kc) = match find_lit(self.e.clause(cg), &target) {
+                    Some(t) => t,
+                    None => return Ok(None),
+                };
+                let (cur2, q) = replace_atom(&cur, &at, &Poly::f(u1));
+                items.push((q.scale(&(Q::one() / &kc)), cg, ic));
+                cur = cur2;
+            }
+        }
+        let rest = cur.sub(&t1);
+        if !rest.is_zero() {
+            match crate::polyutil::exact_div(&rest, &diff_lit) {
+                Some(r) => items.push((r.scale(&(Q::one() / lam)), eqf, ei)),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(items))
+    }
+
+    /// 逆数の代入 x := K/x（K は 0 でない有理数か、逆数のわかる閉じた式）: 1 変数の節（条件「x = 0」があってもよい）で
+    /// f の引数に 1/x（K/x の形）が現れるとき、x := K/x として K·(K/x)⁻¹ を x に約し、f の外に残る 1/x は x を掛けて消す。
+    /// 結果は「x = 0 ∨ …」（x ≠ 0 でだけ成り立つ）。導出: 逆数の公理（K/x と x）・排中律・一次結合・合同性・導出原理。
+    /// 例: x ≠ 0 で x·f(1/x) = f(1) から、x ≠ 0 で f(x) = f(1)·x。
+    pub(crate) fn reciprocal_instances(&mut self, st: &mut BState) -> Res<()> {
+        let x0 = x();
+        let ix = Atom::Inv(std::rc::Rc::new(x0.clone()));
+        let cands: Vec<Fact> = st
+            .units
+            .iter()
+            .chain(st.others.iter())
+            .copied()
+            .filter(|&f| {
+                let c = self.e.clause(f);
+                c.nvars() == 1
+                    && c.lits().len() <= 2
+                    && c.lits().iter().all(|l| l.rel() == Rel::Eq)
+                    && c.lits().iter().any(|l| f_atoms_with_vars(l.poly()).iter().any(|u| u.has_inv()))
+            })
+            .collect();
+        for f in cands.into_iter().take(self.scaled(6)) {
+            if self.closed(st) {
+                return Ok(());
+            }
+            let key = format!("recip|{:?}", f);
+            if !st.tried.insert(key) {
+                continue;
+            }
+            let c = self.e.clause(f).clone();
+            // 条件のリテラルは「x = 0」だけ許す
+            let side: Vec<usize> = (0..c.lits().len()).filter(|&i| c.lits()[i] == Lit::eq(x0.clone())).collect();
+            let main: Vec<usize> = (0..c.lits().len()).filter(|i| !side.contains(i)).collect();
+            if main.len() != 1 {
+                continue;
+            }
+            let p = c.lits()[main[0]].poly().clone();
+            // K: f の引数の中の K·inv(x) の係数（有理数か閉じた式）
+            let mut k: Option<Poly> = None;
+            for u in f_atoms_with_vars(&p) {
+                let cs = coeffs_in(&u, &ix);
+                if let Some(kk) = cs.get(&1) {
+                    if !kk.has_var() && !kk.has_inv() && !kk.is_zero() {
+                        k = Some(kk.clone());
+                        break;
+                    }
+                }
+            }
+            let k = match k {
+                Some(k) => k,
+                None => continue,
+            };
+            // K の逆数: 有理数ならそのまま、閉じた式なら st.invs から
+            let kinv = match k.as_const() {
+                Some(q) => Poly::constant(Q::one() / q),
+                None => match st.invs.iter().find(|(u, _)| *u == k) {
+                    Some((_, iu)) => iu.clone(),
+                    None => continue,
+                },
+            };
+            let b = st.b;
+            let u = k.mul(&Poly::inv(x0.clone())); // K/x
+            let iu = Atom::Inv(std::rc::Rc::new(u.clone()));
+            // ax_u: u = 0 ∨ u·inv(u) − 1 = 0、ax_x: x = 0 ∨ x·inv(x) − 1 = 0
+            let ax_u = self.e.k.inv_axiom(b, 1, u.clone())?;
+            let ax_x = self.e.k.inv_axiom(b, 1, x0.clone())?;
+            let one_u = u.mul(&Poly::from_atom(iu.clone())).sub(&Poly::one());
+            let one_x = x0.mul(&Poly::from_atom(ix.clone())).sub(&Poly::one());
+            let (iau, kau) = match find_lit(self.e.clause(ax_u), &one_u) {
+                Some(t) => t,
+                None => continue,
+            };
+            let (iax, kax) = match find_lit(self.e.clause(ax_x), &one_x) {
+                Some(t) => t,
+                None => continue,
+            };
+            // x·(u inv(u) − 1) − K inv(u)·(x inv(x) − 1) = K inv(u) − x
+            let r0 = self.e.k.lincomb(
+                b,
+                1,
+                vec![
+                    (x0.scale(&(Q::one() / &kau)), ax_u, iau),
+                    (k.mul(&Poly::from_atom(iu.clone())).neg().scale(&(Q::one() / &kax)), ax_x, iax),
+                ],
+            )?;
+            // nz: x = 0 ∨ u ≠ 0（u = 0 なら x·u = K だが K ≠ 0）
+            let eo = self.e.k.eq_or_ne(b, 1, u.clone())?;
+            let (ieo, keo) = match find_lit(self.e.clause(eo), &u) {
+                Some(t) => t,
+                None => continue,
+            };
+            // x·u − K·(x inv x − 1) = K（u = K inv x なので x·u = K·x·inv(x)）
+            let nz0 = self.e.k.lincomb(b, 1, vec![(x0.scale(&(Q::one() / &keo)), eo, ieo), (k.neg().scale(&(Q::one() / &kax)), ax_x, iax)])?;
+            // nz0 は「K = 0 ∨ u ≠ 0 ∨ x = 0」。K = 0 は K が 0 でない有理数なら消えている。閉じた式なら K ≠ 0 で外す
+            let mut nz = nz0;
+            if let Some(i) = self.e.clause(nz).lits().iter().position(|l| *l == Lit::eq(k.clone())) {
+                match st.nes.iter().copied().find(|&n| self.e.poly0(n) == k || self.e.poly0(n) == k.neg()) {
+                    Some(n) => nz = self.e.k.resolve(b, nz, i, n, 0)?,
+                    None => continue,
+                }
+            }
+            // r0 の u = 0 を nz で外す → R: x = 0 ∨ K inv(u) − x = 0
+            let iu0 = match self.e.clause(r0).lits().iter().position(|l| *l == Lit::eq(u.clone())) {
+                Some(i) => i,
+                None => continue,
+            };
+            let iun = match self.e.clause(nz).lits().iter().position(|l| *l == Lit::ne(u.clone())) {
+                Some(i) => i,
+                None => continue,
+            };
+            let rr = self.e.k.resolve(b, r0, iu0, nz, iun)?;
+            // R のリテラル: inv(u) − x·inv(K) の定数倍
+            let val = x0.mul(&kinv);
+            let target = Poly::from_atom(iu.clone()).sub(&val);
+            let (ri, rk) = match find_lit(self.e.clause(rr), &target) {
+                Some(t) => t,
+                None => continue,
+            };
+            // 例化 x := K/x
+            let inst = self.e.k.instantiate(b, f, vec![u.clone()], 1)?;
+            let ci = self.e.clause(inst).clone();
+            let pm = p.subst_vars(&[u.clone()]);
+            let (mi, mk) = match find_lit(&ci, &pm) {
+                Some(t) => t,
+                None => continue,
+            };
+            // inv(u) を x/K に置き換える
+            let items = match self.atom_replace_items(b, 1, &pm, &iu, &val, rr, ri, &rk, 0)? {
+                Some(v) => v,
+                None => continue,
+            };
+            let pm1 = pm.transform(&mut |a| if a == iu { val.clone() } else { Poly::from_atom(a) });
+            let mut its = vec![(Poly::constant(Q::one() / &mk), inst, mi)];
+            its.extend(items.into_iter().map(|(cf, fct, li)| (cf.neg(), fct, li)));
+            let mut cur = self.e.k.lincomb(b, 1, its)?;
+            // 例化でできた条件「K/x = 0」を nz で x = 0 にする
+            if let Some(i) = self.e.clause(cur).lits().iter().position(|l| *l == Lit::eq(u.clone())) {
+                cur = self.e.k.resolve(b, cur, i, nz, iun)?;
+            }
+            // 残る 1/x（f の外）は x^k を掛けて消す
+            let lits = self.e.clause(cur).lits().to_vec();
+            let li = match lits.iter().position(|l| l.poly().has_inv() || !l.poly().vars().is_empty() && *l != Lit::eq(x0.clone())) {
+                Some(i) => i,
+                None => continue,
+            };
+            let q = lits[li].poly().clone();
+            let kx = q.terms().iter().map(|(m, _)| m.factors().iter().filter(|(a, _)| *a == ix).map(|(_, e)| *e).sum::<u32>()).max().unwrap_or(0);
+            if kx > 0 {
+                if kx > 2 || f_atoms_with_vars(&q).iter().any(|uu| uu.has_inv()) {
+                    continue;
+                }
+                let m = x0.pow(kx);
+                let q2 = cancel_inv(&q.mul(&m), 0);
+                if q2.has_inv() {
+                    continue;
+                }
+                // m·q − q2 は (x inv x − 1) の倍数
+                let rest = q.mul(&m).sub(&q2);
+                let rr2 = match crate::polyutil::exact_div(&rest, &one_x) {
+                    Some(r) => r,
+                    None => continue,
+                };
+                cur = self.e.k.lincomb(b, 1, vec![(m, cur, li), (rr2.neg().scale(&(Q::one() / &kax)), ax_x, iax)])?;
+            }
+            if pm1.has_inv() && kx == 0 && self.e.clause(cur).lits().iter().any(|l| l.poly().has_inv()) {
+                continue;
+            }
+            self.bump("recip_subst");
+            let cur = self.tidy_clause(st, cur)?;
+            self.e.add_fact(st, cur)?;
+        }
+        Ok(())
+    }
+
     /// 条件の外せる点での例化: 2 つ以上のリテラルをもつ事実で、1 つの変数 w だけを含む等式リテラル p(w) = 0 について、
     /// この枝の閉じた ≠ の事実 u ≠ 0 に現れる定数 K で p(K) が u の定数倍になるなら、w := K と例化する
     /// （追加時に既知の ≠ の事実でそのリテラルが外れる）。例: 「f(x) = 0 ∨ f(y) = y + f(x) − x」と f(a) ≠ 0 から f(y) = y + f(a) − a。
@@ -889,6 +1136,11 @@ impl Searcher {
                 }
                 let content = monomial_content(l.poly());
                 if content.is_one() {
+                    continue;
+                }
+                // 1 つの原子の定数倍（例: x = 0）は分解しても同じ節なので分解しない
+                let deg: u32 = content.factors().iter().map(|(_, e)| *e).sum();
+                if l.poly().terms().len() == 1 && deg == 1 {
                     continue;
                 }
                 let mut fs: Vec<Poly> = Vec::new();

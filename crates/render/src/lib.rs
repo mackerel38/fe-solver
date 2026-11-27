@@ -87,7 +87,11 @@ fn fmt_atom(a: &Atom, n: &Names) -> String {
         Atom::F(p) => format!("f({})", fmt_poly(p, n)),
         Atom::Inv(p) => {
             let s = fmt_poly(p, n);
-            if p.terms().len() == 1 && p.terms()[0].1.is_one() {
+            // 中身が変数・定数 1 つのときだけ括弧を省く（1/xy・1/1/x のような紛らわしい表示を避ける）
+            let simple = p.terms().len() == 1
+                && p.terms()[0].1.is_one()
+                && matches!(p.terms()[0].0.factors(), [(Atom::Var(_) | Atom::Const(_), 1)]);
+            if simple {
                 format!("1/{}", s)
             } else {
                 format!("1/({})", s)
@@ -115,13 +119,15 @@ fn fmt_mono(m: &Mono, n: &Names) -> String {
     parts.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = String::new();
     let mut prev_alpha = false;
+    let mut prev_inv = false;
     for (_, s) in parts {
-        // 1文字の名前どうしが続くとき（x y → xy）以外で曖昧になりそうなら · を入れる
+        // 1文字の名前どうしが続くとき（x y → xy）以外で曖昧になりそうなら · を入れる（1/x の後ろも）
         let starts_digit = s.chars().next().map_or(false, |c| c.is_ascii_digit());
-        if !out.is_empty() && (starts_digit || (prev_alpha && s.starts_with("1/"))) {
+        if !out.is_empty() && (starts_digit || prev_inv || (prev_alpha && s.starts_with("1/"))) {
             out.push('·');
         }
         prev_alpha = true;
+        prev_inv = s.starts_with("1/");
         out.push_str(&s);
     }
     out
@@ -459,7 +465,7 @@ impl<'a> Ctx<'a> {
                 var_name(*var),
                 var_name(*var)
             ),
-            Rule::InvAxiom { poly } => format!("{} ≠ 0 ならば逆数 1/({}) が存在するので", fmt_poly(poly, &n), fmt_poly(poly, &n)),
+            Rule::InvAxiom { poly } => format!("{} ≠ 0 ならば逆数 {} が存在するので", fmt_poly(poly, &n), fmt_atom(&Atom::Inv(std::rc::Rc::new(poly.clone())), &n)),
             Rule::Weaken { premise, .. } => format!("{} より特に", self.lbl(*premise)),
             Rule::CauchyBounded { additive, bound } => format!(
                 "{} より g(x) = f(x) − f(0) は加法的、{} より g は x ≥ 0 で片側に有界なので",
