@@ -132,7 +132,7 @@ pub fn swap_xy(p: &Poly) -> Poly {
 
 impl Engine {
     pub fn new(k: Kernel, deadline: Instant) -> Engine {
-        Engine { k, deadline, rewrite_budget: 400, timing: Default::default(), add_depth: 0, size_cap: 80 }
+        Engine { k, deadline, rewrite_budget: 400, timing: Default::default(), add_depth: 0, size_cap: 110 }
     }
 
     pub fn check_time(&self) -> Res<()> {
