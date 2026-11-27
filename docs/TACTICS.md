@@ -28,6 +28,7 @@
 | SquareRange | 変数が 2 乗でだけ現れる事実を t ≥ 0 の事実にする | square_range_rule |
 | InvAxiom / Weaken | u = 0 ∨ u·inv(u) = 1、A から A ∨ B | inv_axiom_and_weaken |
 | CauchyBounded | 加法的で片側に有界なら 1 次関数 | cauchy_bounded_rule |
+| （解の族の検証）verify_solution / verify_piecewise / verify_additive(_kind) / verify_arbitrary | 事実は作らず、解の族の値（検証済みの印）だけを作る。詳細は 2 節 | 2 節の各テスト |
 | ImportLemma | 別に解いた方程式（補題）の解の集合を取り込む | import_lemma_rule |
 | 場合分け | 変数を共有しない選言の分割（SplitComponents）、排中律（SplitExcludedMiddle）、Merge、AbandonSplit | split_components_rejects_pointwise_disjunction, merge_rules, abandon_split_rule など |
 
@@ -39,11 +40,14 @@
 | 区分的な族（区切り点、各区間で多項式） | verify_piecewise（x, y の符号と引数の区間で場合分け） | mark_piecewise（区間ごとの事実） | piecewise_verification, piecewise_marking |
 | 加法的関数を含む族 f(x) = A(x) + g(x)（A は任意の加法的関数） | verify_additive（A を有理数係数の和で展開して恒等式） | mark_additive（f − g が加法的） | verify_additive_rule, mark_additive_rule |
 | 条件つきの加法的な族（A(A(x)) = x の対合・A(A(x)) = A(x) の射影） | verify_additive_kind（A(A(u)) を u・A(u) に置き換えて展開） | mark_additive_constrained（加法性 + 条件） | additive_kinds_rule |
+| 任意の区間をもつ族（区分的な族の一部の開区間で、f が任意の値・0 以上 / 以下の任意の値・各点で 2 つの式の一方）。病的な解の存在の証明（特殊解決）に使う | verify_arbitrary（区分的な族と同じ場合分けで、任意の区間での値 f(v) を引数ごとに独立な記号として恒等式を確かめる。0 以上 / 以下の記号の符号は区間の判定に使い、各点の選択は 2 通りに分けて同じ引数の選択をそろえる。D34） | なし（存在の証明だけ。解の集合を決めたと主張しない。complete / special と同時に成り立てば内部エラー） | arbitrary_family_verification, tactic_arbitrary_family, negative_no_arbitrary_family_for_rigid_equations, negative_arbitrary_family_examples_are_genuine |
 
 まだ表現できない解の型（失敗の分析で見つかったもの）:
 - パラメータを含む区分的な族（x ≠ 0 で 0、x = 0 で任意の c）。試作したが不採用（D30）
 - 区切り点がパラメータの区分的な族（x ≥ c で x、x < c で −x）
-- 半直線上で任意の関数、各点で ±x を自由に選ぶ解、乗法的・指数型（ℚ 上のベクトル空間で作る）、2 倍で閉じた集合で決まる解
+- 半直線上で任意の関数、各点で ±x を自由に選ぶ解: 区切り点 0 で片側が x・−x・0、反対側が任意のものは、任意の区間をもつ族で
+  病的な解の存在まで示せるようになった（D34）。解の集合全体（集合 S の閉包条件で決まる族など）はまだ表現できない
+- 乗法的・指数型（ℚ 上のベクトル空間で作る）、2 倍で閉じた集合で決まる解、像が部分群で剰余類の代表元を任意に選ぶ解（FE-0007 型）
 
 ## 3. 探索の手法
 
@@ -106,6 +110,11 @@
 | f の値で決まる量の補題 | 1 変数の事実 c·f(g(f(y))) + R(y) = 0 から「f(y) = f(z) ⇒ R(y) = R(z)」（EqOrNe, Congruence, LinComb）。結果がちょうど「y = z ∨ f(y) ≠ f(z)」なら単射性として登録 | P(1, x) 型の事実 f(2f(x)) = x + f(x) から単射性 | tactic_swap_difference_and_value_injectivity |
 | 条件つき単射性の当てはめ | 「Q(x, y) ∨ f(y) ≠ f(x)」を、変数のない事実・小さい 1 変数の事実 f(s₁) = f(s₂) に代入して導出原理で Q(s₂, s₁)（Instantiate, Resolve）。1 回 scaled(40) 個まで | f(f(x)²) = x·f(x) から「f(a) = f(b) ≠ 0 なら a = b」 | 全体の計測 |
 | 平行移動の補題 | f(x + A(y)) = f(x) + B(y) から「A(y) = A(z) ⇒ B(y) = B(z)」と、x := x − A(−y) の 2 例の差による周期の補題 f(x + A(y) − A(−y)) = f(x) + B(y) − B(−y) | 平行移動型 f(x + T(y)) = f(x) + S(y)（ただし対象の多くはまだ解けない） | 全体の計測 |
+
+### 3.9 病的な解の候補（finalize.rs の find_arb_candidates）
+| 手法 | 何をするか（使う規則） | 効く類・例 | テスト |
+|---|---|---|---|
+| 任意の区間をもつ族の候補 | 区切り点 0 で、片側を g ∈ {x, −x, 0}、反対側を「任意の値・0 以上・0 以下・各点で x か −x・0 か x・0 か −x」とした 36 通りを verify_arbitrary で確かめ、最初に通ったものを病的な解の存在（special_exist）として報告する | f の引数がいつも 0 以上になる型（f(x² + f(y²)) = x² + y²、f(f(x) + f(y)²) = f(x) + f(y)²）、f の値が 2 乗や t·f(t) でだけ現れる型（f(x)² = x²、f(x f(x) + y f(y)) = x f(x) + y f(y)） | tactic_arbitrary_family |
 
 ### 3.7 時間と幅
 - 反復拡幅: 探索幅 0.5 → 1 → 2 を時間の 25% / 35% / 残りで独立に解き直す。残り時間があれば幅を倍にして続ける（上限 16）
