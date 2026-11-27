@@ -270,6 +270,7 @@ fn premises(r: &Rule) -> Vec<Fact> {
         }
         Rule::Merge { facts, .. } => facts.iter().flatten().copied().collect(),
         Rule::CauchyBounded { additive, bound } => vec![*additive, *bound],
+        Rule::AffineXY { premise } => vec![*premise],
         Rule::ImportLemma { premise, .. } => vec![*premise],
     }
 }
@@ -464,6 +465,10 @@ impl<'a> Ctx<'a> {
                 "{} より g(x) = f(x) − f(0) は加法的、{} より g は x ≥ 0 で片側に有界なので",
                 self.lbl(*additive),
                 self.lbl(*bound)
+            ),
+            Rule::AffineXY { premise } => format!(
+                "{} は f(xy + g(x)) = x f(y) + h(x) の型（g, h は x だけの式）であり、この型の解は 1 次関数に限るので",
+                self.lbl(*premise)
             ),
             Rule::ImportLemma { premise, lemma } => format!(
                 "{} は方程式 {} であり、下の【補題】より、解は次に限るので",

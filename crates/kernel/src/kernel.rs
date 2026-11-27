@@ -66,6 +66,7 @@ pub enum Rule {
     Weaken { premise: Fact, extra: Vec<Lit> },
     Merge { parent: BranchId, facts: Vec<Option<Fact>> },
     CauchyBounded { additive: Fact, bound: Fact },
+    AffineXY { premise: Fact },
     ImportLemma { premise: Fact, lemma: std::rc::Rc<Kernel> },
 }
 
@@ -752,6 +753,70 @@ impl Kernel {
         lits.extend(extra.iter().cloned());
         let out = Clause::new(nvars, lits)?;
         Ok(self.push(out, target, Rule::Weaken { premise, extra }))
+    }
+
+    /// 規則 AffineXY（既知の型 f(xy + g(x)) = x f(y) + h(x) の解は 1 次関数）:
+    /// 前提が単位等式「∀x,y. λ(f(a·u·v + G) − a·u·f(v) − H) = 0」（a は 0 でない有理数、(u, v) は (x, y) か (y, x)、
+    /// G と H は v を含まない式。f の引数の中にも v を含まない）なら「∀x. f(x) − (f(1) − f(0))·x − f(0) = 0」。
+    /// 根拠（関数 g, h を G, H の値として固定し、u を a·u に置き換えて a = 1 とする）: P(x, y): f(xy + g(x)) = x f(y) + h(x)。
+    ///  (1) f(y + c) = f(y) + d（定数 c ≠ 0）なら、P(x, y + c) と P(x, y) から f(y + g(x) + xc) = f(y + g(x)) + xd（x ≠ 0、
+    ///      x = 0 でも明らか）。y = −g(x) として f(xc) = f(0) + xd、よって f は 1 次。
+    ///  (2) P(−1, y): f(−y + g(−1)) = −f(y) + h(−1)。これを P(x, ·) に入れて、x ≠ 0 で
+    ///      f(−y + x g(−1) + 2g(x)) = −f(y) + x h(−1) + 2h(x)。ある t ≠ 0 で a := t g(−1) + 2g(t) ≠ g(−1) なら、
+    ///      f(−y + a) = −f(y) + b と P(−1, ·) から f(y) = f(y − a + g(−1)) + h(−1) − b となり、(1) より 1 次。
+    ///  (3) そうでなければ、すべての x ≠ 0 で x g(−1) + 2g(x) = g(−1)、同じ式から x h(−1) + 2h(x) = h(−1)。
+    ///      よって x ≠ 0 で g(x) = c(x − 1)、h(x) = d(x − 1)。y = y₀（y₀ ≠ −c）を固定すると xy₀ + c(x − 1) は
+    ///      x ≠ 0 で −c 以外のすべての値をとるので、f は 1 点 k を除いて 1 次 f(t) = αt + β。十分大きい x, y の比較で
+    ///      αc = β + d、さらに y = k（k ≠ −c のとき）または y = −c（k = −c のとき）を入れて大きい x をとると
+    ///      f(k) = αk + β。よって f はすべての点で 1 次。
+    ///  1 次関数 f(x) = αx + β では β = f(0)、α = f(1) − f(0)。
+    pub fn affine_xy(&mut self, target: BranchId, premise: Fact) -> R<Fact> {
+        self.check_branch(target)?;
+        let c = self.premise(premise, target)?.clone();
+        if c.lits().len() != 1 || c.lits()[0].rel() != Rel::Eq || c.nvars() != 2 {
+            return Err("AffineXY の前提は 2 変数の単位等式".into());
+        }
+        if !Self::is_affine_xy_form(c.lits()[0].poly()) {
+            return Err("f(a·xy + g(x)) − a·x·f(y) − h(x) の形でない".into());
+        }
+        let x = Poly::var(0);
+        let f0 = Poly::f(Poly::zero());
+        let f1 = Poly::f(Poly::one());
+        let concl = Poly::f(x.clone()).sub(&f1.sub(&f0).mul(&x)).sub(&f0);
+        let out = Clause::new(1, vec![Lit::eq(concl)])?;
+        Ok(self.push(out, target, Rule::AffineXY { premise }))
+    }
+
+    /// p が λ(f(a·u·v + G) − a·u·f(v) − H)（G, H は v を含まない）の形か
+    fn is_affine_xy_form(p: &Poly) -> bool {
+        for (u, v) in [(0u32, 1u32), (1, 0)] {
+            let uv = Poly::var(u).mul(&Poly::var(v));
+            for (m, lam) in p.terms() {
+                if m.factors().len() != 1 || m.factors()[0].1 != 1 {
+                    continue;
+                }
+                let arg = match &m.factors()[0].0 {
+                    Atom::F(a) => (**a).clone(),
+                    _ => continue,
+                };
+                // 引数の u·v の係数 a（0 でない有理数）
+                let a = match arg.terms().iter().find(|(mm, _)| *mm == uv.terms()[0].0) {
+                    Some((_, a)) => a.clone(),
+                    None => continue,
+                };
+                let g = arg.sub(&uv.scale(&a));
+                if g.vars().contains(&v) {
+                    continue;
+                }
+                let q = p.scale(&(Q::one() / lam));
+                let rest = q.sub(&Poly::f(arg.clone())).add(&Poly::var(u).mul(&Poly::f(Poly::var(v))).scale(&a));
+                if rest.vars().contains(&v) {
+                    continue;
+                }
+                return true;
+            }
+        }
+        false
     }
 
     /// 規則 CauchyBounded（コーシーの方程式の有界な解）:

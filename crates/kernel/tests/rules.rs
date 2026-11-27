@@ -749,3 +749,41 @@ fn additive_kinds_rule() {
     assert_eq!(concl.add_families.len(), 1);
     assert!(!concl.complete, "排中律の他の枝が開いている");
 }
+
+/// 規則 AffineXY: f(a·xy + g(x)) = a·x·f(y) + h(x) の型から f は 1 次（x と y の役割が逆でもよい）。形が違えば拒否
+#[test]
+fn affine_xy_rule() {
+    let want = |k: &mut Kernel, ok: bool, name: &str| {
+        let a = k.axiom();
+        let r = k.affine_xy(ROOT, a);
+        assert_eq!(r.is_ok(), ok, "{}", name);
+        if let Ok(fact) = r {
+            let concl = f(x()).sub(&f(c(1)).sub(&f(c(0))).mul(&x())).sub(&f(c(0)));
+            assert_eq!(*k.clause(fact), cl(1, vec![Lit::eq(concl)]), "{}", name);
+        }
+    };
+    // f(x f(x) + xy) = f(x)² + x f(y)
+    let mut k1 = Kernel::new(f(x().mul(&f(x())).add(&x().mul(&y()))), f(x()).pow(2).add(&x().mul(&f(y())))).unwrap();
+    want(&mut k1, true, "基本の形");
+    // a = 2: f(2xy + x²) = 2x f(y) + x
+    let mut k2 = Kernel::new(f(x().mul(&y()).scale(&q(2)).add(&x().pow(2))), x().mul(&f(y())).scale(&q(2)).add(&x())).unwrap();
+    want(&mut k2, true, "係数 a = 2");
+    // 役割が逆: f(xy + y²) = y f(x) + y
+    let mut k3 = Kernel::new(f(x().mul(&y()).add(&y().pow(2))), y().mul(&f(x())).add(&y())).unwrap();
+    want(&mut k3, true, "x と y の役割が逆");
+    // 係数が合わない: f(xy + x) = 2x f(y)
+    let mut k4 = Kernel::new(f(x().mul(&y()).add(&x())), x().mul(&f(y())).scale(&q(2))).unwrap();
+    want(&mut k4, false, "f(y) の係数が合わない");
+    // h が y を含む: f(xy + x) = x f(y) + y
+    let mut k5 = Kernel::new(f(x().mul(&y()).add(&x())), x().mul(&f(y())).add(&y())).unwrap();
+    want(&mut k5, false, "h が y を含む");
+    // g が y を含む: f(xy + y) = x f(y)
+    let mut k6 = Kernel::new(f(x().mul(&y()).add(&y())), x().mul(&f(y()))).unwrap();
+    want(&mut k6, false, "g が y を含む");
+    // f の中に y が残る: f(xy + f(y)) = x f(y)
+    let mut k7 = Kernel::new(f(x().mul(&y()).add(&f(y()))), x().mul(&f(y()))).unwrap();
+    want(&mut k7, false, "g が f(y) を含む");
+    // 2 つの f(…y…) をもつ: f(xy + x) = x f(y) + f(y)
+    let mut k8 = Kernel::new(f(x().mul(&y()).add(&x())), x().mul(&f(y())).add(&f(y()))).unwrap();
+    want(&mut k8, false, "h が f(y) を含む");
+}
