@@ -385,6 +385,21 @@ fn tactic_cond_injectivity_fixpoint() {
     check_families(eq, &l, &r, &out);
 }
 
+/// パターンつきのべきの規則: 1 変数の事実 f(x)² = x² を、f の引数の中の f(t)² にも当てて t² に書き換える
+/// （f(f(y)² + 3x f(x)) → f(y² + 3x f(x)) など）。各点で ±x の場合分けのあと、f(a) = −a の枝で y := 2a などの代入がすぐ矛盾になる。
+/// 規則の根での例 f(f(x)²) → f(0) + x² の x = 0 で f(f(0)²) = f(0) を作り、条件つきの単射性で f(0) = 0 を出す。問題集にない係数の式
+#[test]
+fn tactic_pattern_power_rule() {
+    // どちらもこの規則がないと 15〜20 秒で解けない（FE_NO_PATPOW で確かめた）
+    for eq in ["f(3*x*f(x) + f(y)^2) = f(3*x^2) + y^2", "f(2*x*f(x) + 3*f(y)^2) = f(2*x^2) + 3*y^2"] {
+        let (l, r, out) = run(eq, 20);
+        assert_eq!(out.status, "complete", "{}", eq);
+        let got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+        assert_eq!(got, vec!["x".to_string()], "{}: 解の集合 {:?}", eq, got);
+        check_families(eq, &l, &r, &out);
+    }
+}
+
 /// 有理根による因数分解（factor_linear_roots）と、x について同次で判別式が負の 2 次の因子の除去（plain_rootless_quadratic）、
 /// 点の条件 x = 0 の除去: f(x)³ = 8x³ から「f(x) − 2x = 0 ∨ f(x)² + 2x·f(x) + 4x² = 0」、後者は x = 0 のときだけなので
 /// 「f(x) − 2x = 0 ∨ x = 0」、f(0)³ = 0 から f(0) = 0 で f(x) = 2x。3 次の係数を変えた式でも
