@@ -113,6 +113,40 @@ fn match_rec(p: &Poly, t: &Poly, s: &mut Vec<Option<Poly>>, depth: u32) -> bool 
                     return true;
                 }
             }
+            return false;
+        }
+        // パターン変数を含む原子に他の因子が掛かった単項式（x·f(x), x·f(y), f(x)·f(y), f(x)² など）:
+        // その原子を、対象の単項式の因子に現れる同じ種類の原子と順に対応させて引数を照合し、
+        // 原子が閉じた式になったパターン全体の照合を続ける（代入すると原子は各項の因子として残るため、
+        // 対象の因子の原子だけを候補にすればよい。積が 0 に消える代入は見つけない）
+        let Some((pa, _)) = m.factors().iter().find(|(a, _)| match a {
+            Atom::F(q) | Atom::Inv(q) => !pat_vars(q).is_empty(),
+            _ => false,
+        }) else {
+            return false;
+        };
+        let mut cands: Vec<&Atom> = Vec::new();
+        for (tm, _) in t.terms() {
+            for (ta, _) in tm.factors() {
+                let same_head = matches!((pa, ta), (Atom::F(_), Atom::F(_)) | (Atom::Inv(_), Atom::Inv(_)));
+                if same_head && !cands.contains(&ta) {
+                    cands.push(ta);
+                }
+            }
+        }
+        for ta in cands.into_iter().take(16) {
+            let (pi, ti) = match (pa, ta) {
+                (Atom::F(a), Atom::F(b)) | (Atom::Inv(a), Atom::Inv(b)) => (a, b),
+                _ => unreachable!(),
+            };
+            let mut s2 = s.clone();
+            if !match_rec(pi, ti, &mut s2, depth + 1) {
+                continue;
+            }
+            if match_rec(p, t, &mut s2, depth + 1) {
+                *s = s2;
+                return true;
+            }
         }
         return false;
     }
@@ -276,5 +310,28 @@ mod tests {
         let s = match_poly(&pat, 1, &t).unwrap();
         assert_eq!(s[0], y().add(&Poly::int(2)));
         assert!(match_poly(&pat, 1, &y().add(&Poly::one())).is_none());
+    }
+    #[test]
+    fn product_with_pattern_atom() {
+        let f = Poly::f;
+        // x·f(x) と y·f(y)、(y+1)·f(y+1)（展開された形）
+        let pat = x().mul(&f(x()));
+        assert_eq!(match_poly(&pat, 1, &y().mul(&f(y()))).unwrap(), vec![y()]);
+        let y1 = y().add(&Poly::one());
+        assert_eq!(match_poly(&pat, 1, &y1.mul(&f(y1.clone()))).unwrap(), vec![y1.clone()]);
+        // 引数が食い違うものには合わない: y·f(y + 1)
+        assert!(match_poly(&pat, 1, &y().mul(&f(y1.clone()))).is_none());
+        // x·f(y) と 2·f(x²)、f(3)·f(x)·x（変数の値は原子の照合と 1 次の係数から決まる）
+        let pat = x().mul(&f(y()));
+        assert_eq!(match_poly(&pat, 2, &f(x().pow(2)).scale(&fe_kernel::poly::q(2))).unwrap(), vec![Poly::int(2), x().pow(2)]);
+        let s = match_poly(&pat, 2, &f(Poly::int(3)).mul(&f(x())).mul(&x())).unwrap();
+        assert_eq!(Poly::var(0).mul(&f(Poly::var(1))).subst_vars(&s), f(Poly::int(3)).mul(&f(x())).mul(&x()));
+        // f(x)² + x と f(y + 1)² + y + 1
+        let pat = f(x()).pow(2).add(&x());
+        assert_eq!(match_poly(&pat, 1, &f(y1.clone()).pow(2).add(&y1)).unwrap(), vec![y1.clone()]);
+        assert!(match_poly(&pat, 1, &f(y1.clone()).pow(2).add(&y())).is_none());
+        // x·f(x) + 2x·f(y) と 1 + ... のように合わないもの
+        let pat = x().mul(&f(x())).add(&x().mul(&f(y())).scale(&fe_kernel::poly::q(2)));
+        assert!(match_poly(&pat, 2, &Poly::one()).is_none());
     }
 }
