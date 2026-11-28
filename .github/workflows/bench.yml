@@ -26,7 +26,7 @@ on:
         required: false
         default: ""
       toggles:
-        description: "実験用: 1 にする環境変数の名前（FE_NO_SPEC など、カンマ区切り。空なら何もしない）"
+        description: "実験用: 1 にする環境変数の名前（FE_NO_SPEC など）か 名前=数（FE_ZINJ_SECS=6 など）のカンマ区切り。空なら何もしない"
         required: false
         default: ""
       schedule:
@@ -105,7 +105,9 @@ jobs:
           FE_TOGGLES: ${{ inputs.toggles }}
         run: |
           for t in ${FE_TOGGLES//,/ }; do
-            if [[ "$t" =~ ^FE_[A-Z0-9_]+$ ]]; then export "$t=1"; echo "切り替え: $t=1"; else echo "不正な名前: $t"; exit 1; fi
+            if [[ "$t" =~ ^FE_[A-Z0-9_]+$ ]]; then export "$t=1"; echo "切り替え: $t=1";
+            elif [[ "$t" =~ ^(FE_[A-Z0-9_]+)=([0-9.]+)$ ]]; then export "$t"; echo "切り替え: $t";
+            else echo "不正な指定: $t"; exit 1; fi
           done
           python3 scripts/bench.py --no-build --no-tests --save-proofs \
             --sets "${{ inputs.sets }}" \

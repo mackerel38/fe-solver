@@ -84,7 +84,10 @@ impl Searcher {
         let saved = self.e.deadline;
         let now = Instant::now();
         let remain = saved.saturating_duration_since(now);
-        self.e.deadline = now + (remain / 5).min(Duration::from_secs(4));
+        // 否定側の枝の持ち時間: 残り時間の 1/div、最大 secs 秒（既定 div = 5, secs = 4。実験用に FE_ZINJ_DIV・FE_ZINJ_SECS で変えられる）
+        let div: u32 = std::env::var("FE_ZINJ_DIV").ok().and_then(|v| v.parse().ok()).unwrap_or(5).max(1);
+        let secs: f64 = std::env::var("FE_ZINJ_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0);
+        self.e.deadline = now + (remain / div).min(Duration::from_secs_f64(secs));
         let open_before = self.open.len();
         let retry_before = self.retry.len();
         let mut cst = st.child(c1);
