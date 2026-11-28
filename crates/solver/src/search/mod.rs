@@ -159,6 +159,19 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            // 実験用（既定では何もしない）: 右辺が同じ事実の比較・f の値で決まる量の補題も場合分けより先に行う
+            if std::env::var("FE_EARLY_SAMERHS").is_ok() {
+                self.same_rhs(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+            }
+            if round >= 1 && std::env::var("FE_EARLY_VALUE").is_ok() {
+                self.value_lemmas(st)?;
+                if self.closed(st) {
+                    return Ok(());
+                }
+            }
             // 逆数の代入 x := K/x（f の引数の 1/x を消す）
             self.reciprocal_instances(st)?;
             if self.closed(st) {
