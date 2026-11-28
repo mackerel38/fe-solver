@@ -146,6 +146,9 @@ fn solve_once(lhs: Poly, rhs: Poly, timeout: Duration, width: f64) -> Result<Sol
         "unresolved"
     };
     let mut reasons: Vec<String> = s.open.iter().map(|(b, r)| format!("枝{}: {}", b.0, r)).collect();
+    if s.e.mem_exceeded.get() {
+        reasons.insert(0, format!("{}（{} MB）に達したので探索を打ち切った", crate::engine::MEMORY_LIMIT, crate::engine::max_mb()));
+    }
     if let Some(e) = &error {
         reasons.push(format!("内部エラー: {}", e));
     }

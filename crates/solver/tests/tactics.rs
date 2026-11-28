@@ -427,3 +427,18 @@ fn tactic_cond_injectivity_rule_pairs() {
     assert!(used > 0, "{}: 右辺が同じ規則の組への当てはめが働いていない", eq);
     check_families(eq, &l, &r, &out);
 }
+
+/// 規則の自己合成を場合分けより先に（規則ができた直後に）行う: P(0, y) の f(f(y)²) = y² から自己合成で f(x⁴) = f(x)⁴。
+/// 後で f(x²) = x f(x) が規則になると f(f(x)²) が f(x)·f(f(x)) に書き換わって自己合成の形が崩れるので、先に行う。
+/// f(x⁴) = x³ f(x) と合わせて f(x)(f(x)³ − x³) = 0、因数分解で f(x) ∈ {0, x}。問題集にない式（FE-0205 の y を −y にしたもの）
+#[test]
+fn tactic_early_self_composition() {
+    let eq = "f(x^2 + f(-y)^2) = x*f(x) + y^2";
+    let (l, r, out) = run(eq, 30);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    assert_eq!(got, vec!["x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    check_families(eq, &l, &r, &out);
+    let used = out.stats.iter().find(|(k, _)| k == "self_compose").map_or(0, |(_, v)| *v);
+    assert!(used > 0, "{}: 規則の自己合成を使っていない", eq);
+}

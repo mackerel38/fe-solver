@@ -12,6 +12,20 @@ use std::time::Instant;
 pub type Res<T> = Result<T, String>;
 
 pub const TIMEOUT: &str = "時間切れ";
+/// メモリの上限で探索を打ち切ったときの理由
+pub const MEMORY_LIMIT: &str = "メモリの上限";
+
+/// プロセスの常駐メモリ（MB）。Linux の /proc/self/statm から読む（読めなければ None）
+fn rss_mb() -> Option<u64> {
+    let s = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = s.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096 / (1024 * 1024))
+}
+
+/// メモリの上限（MB）。環境変数 FE_MAX_MB、既定 3000
+pub fn max_mb() -> u64 {
+    std::env::var("FE_MAX_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(3000)
+}
 
 /// 書き換え規則: ∀v̄. lhs(v̄) → rhs(v̄)（事実 fact の等式から作る）
 #[derive(Clone, Debug)]
@@ -75,6 +89,8 @@ pub struct BState {
     pub in_trial: bool,
     /// この枝（と祖先）で条件つきの単射性を当てはめた、右辺が同じ規則の組の数（当てはめが増えすぎないように上限を設ける）
     pub cinj_pairs: usize,
+    /// この枝（と祖先）で行った規則の自己合成の回数（連鎖して増えすぎないように上限を設ける）
+    pub selfc_count: usize,
 }
 
 impl BState {
@@ -100,6 +116,7 @@ impl BState {
             pos_sq: Vec::new(),
             in_trial: false,
             cinj_pairs: 0,
+            selfc_count: 0,
         }
     }
     /// 子の枝用の複製（キャッシュは引き継がない）
@@ -115,6 +132,10 @@ impl BState {
 pub struct Engine {
     pub k: Kernel,
     pub deadline: Instant,
+    /// メモリの確認の間引き用の数
+    pub mem_check: std::cell::Cell<u32>,
+    /// メモリの上限を超えて探索を打ち切ったか
+    pub mem_exceeded: std::cell::Cell<bool>,
     pub rewrite_budget: usize,
     pub timing: std::collections::BTreeMap<&'static str, u128>,
     add_depth: u32,
@@ -135,10 +156,31 @@ pub fn swap_xy(p: &Poly) -> Poly {
 
 impl Engine {
     pub fn new(k: Kernel, deadline: Instant) -> Engine {
-        Engine { k, deadline, rewrite_budget: 400, timing: Default::default(), add_depth: 0, size_cap: 80 }
+        Engine {
+            k,
+            deadline,
+            rewrite_budget: 400,
+            timing: Default::default(),
+            add_depth: 0,
+            size_cap: 80,
+            mem_check: std::cell::Cell::new(0),
+            mem_exceeded: std::cell::Cell::new(false),
+        }
     }
 
     pub fn check_time(&self) -> Res<()> {
+        // 安全装置: ときどきプロセスのメモリ（RSS）を確かめ、上限を超えたら探索を打ち切る（事実が爆発的に増えたときに
+        // 機械を止めないため。上限は FE_MAX_MB、既定 3000 MB。Linux の /proc が読めなければ確かめない）
+        // 超えたら「時間切れ」と同じ扱いで打ち切り（その枝は未完了として残る）、理由は mem_exceeded で記録する
+        if self.mem_exceeded.get() {
+            return Err(TIMEOUT.into());
+        }
+        let n = self.mem_check.get().wrapping_add(1);
+        self.mem_check.set(n);
+        if n % 4096 == 0 && rss_mb().map_or(false, |m| m > max_mb()) {
+            self.mem_exceeded.set(true);
+            return Err(TIMEOUT.into());
+        }
         if Instant::now() > self.deadline {
             Err(TIMEOUT.into())
         } else {
