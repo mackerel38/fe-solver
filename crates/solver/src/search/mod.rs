@@ -159,6 +159,12 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            // 規則の自己合成（f(f(x) + c) = x + d から平行移動など）も場合分けより先に（規則ができた直後に。後で別の規則に
+            // 書き換えられると形が崩れて使えなくなる）
+            self.self_compose_rules(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             // 逆数の代入 x := K/x（f の引数の 1/x を消す）
             self.reciprocal_instances(st)?;
             if self.closed(st) {

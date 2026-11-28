@@ -945,9 +945,15 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
-            if !st.tried.insert(format!("selfc|{:?}", r.fact)) {
+            // 試した記録は規則の中身で付ける（同じ規則が別の事実として作り直されても、合成し直さない）
+            if !st.tried.insert(format!("selfc|{:?}|{:?}", r.lhs, r.rhs)) {
                 continue;
             }
+            // 合成の結果がまた合成の候補になって連鎖することがあるので、枝ごとの回数に上限を設ける
+            if st.selfc_count >= self.scaled(8) {
+                return Ok(());
+            }
+            st.selfc_count += 1;
             let t = match &r.lhs {
                 Atom::F(t) => (**t).clone(),
                 _ => continue,
