@@ -98,7 +98,9 @@
   f(A(t))^k（f の引数の中も含む）を書き換える（照合で t を決め、元の事実を t で例化して一次結合の前提にする: Instantiate, LinComb,
   Congruence）。以前はべきの規則を変数のない事実からしか作らず、∀x f(x)² = x² がわかっても f(f(y)² + 2x f(x)) の f(y)² を
   書き換えられなかった。効く類: f(x)² = x² などが出る型（各点で ±x の場合分けのあと、f(a) = −a の枝で f(y² − 2a²) = f(2a²) + y²
-  に y := 2a を入れるとすぐ矛盾）。FE_NO_PATPOW で切れる（tactic_pattern_power_rule, tactic_cond_injectivity_fixpoint）
+  に y := 2a を入れるとすぐ矛盾）。f の引数の中でだけ当てる（事実の最上位の f(t)^k は因数分解・各点の場合分け・「べき = 0 なら
+  原子 = 0」が使う情報で、最上位でも当てると f(x)³ = 8x³ の例 f(0)³ = 0 が 0 = 0 に消えて f(0) = 0 が出なくなり、計測で 9 問
+  減った）。FE_NO_PATPOW で切れる（tactic_pattern_power_rule, tactic_cond_injectivity_fixpoint, tactic_linear_root_factoring）
 - 閉じた u ≠ 0 の逆数: 仮定や事実として加わったときに加えて、書き換えで新しく閉じた u ≠ 0 になったとき
   （f(b) − b ≠ 0 と f(b) = 0 から b ≠ 0 など）にも、逆数の公理で u·inv(u) = 1 を登録する（InvAxiom, Resolve）
 

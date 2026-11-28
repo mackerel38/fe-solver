@@ -150,6 +150,8 @@ pub struct Engine {
     pub mem_check: std::cell::Cell<u32>,
     /// メモリの上限を超えて探索を打ち切ったか
     pub mem_exceeded: std::cell::Cell<bool>,
+    /// f の引数を正規化している深さ（パターンつきのべきの規則は引数の中でだけ当てる）
+    pub arg_depth: u32,
     pub rewrite_budget: usize,
     pub timing: std::collections::BTreeMap<&'static str, u128>,
     add_depth: u32,
@@ -179,6 +181,7 @@ impl Engine {
             size_cap: 80,
             mem_check: std::cell::Cell::new(0),
             mem_exceeded: std::cell::Cell::new(false),
+            arg_depth: 0,
         }
     }
 
@@ -243,7 +246,10 @@ impl Engine {
         let mut items: Vec<(Poly, Fact, usize)> = Vec::new();
         let mut cur_atom = a.clone();
         if let Atom::F(u) = a {
-            let (u2, its) = self.rw_poly(st, u, n)?;
+            self.arg_depth += 1;
+            let r = self.rw_poly(st, u, n);
+            self.arg_depth -= 1;
+            let (u2, its) = r?;
             if u2 != **u {
                 let g = self.k.congruence(b, n, u2.clone(), its)?;
                 let mu = coeff_of_atom(&self.poly0(g), a).ok_or("合同性の結果に原子がない")?;
@@ -546,8 +552,10 @@ impl Engine {
                 break;
             }
         }
-        // パターンつきのべきの規則 f(A(t))^k → R(t)（例化した事実で書き換える。代入が n 個の変数に収まるときだけ）
-        if !st.pat_pows.is_empty() {
+        // パターンつきのべきの規則 f(A(t))^k → R(t)（例化した事実で書き換える。代入が n 個の変数に収まるときだけ）。
+        // f の引数の中でだけ当てる（事実の最上位の f(t)^k は因数分解・各点の場合分け・「べき = 0 なら原子 = 0」が使う情報で、
+        // 書き換えると失われる。例: f(x)³ = 8x³ の x := 0 の例 f(0)³ = 0 が 0 = 0 に消えて f(0) = 0 が出ない）
+        if self.arg_depth > 0 && !st.pat_pows.is_empty() {
             for _ in 0..4 {
                 let mut changed = false;
                 for pr in st.pat_pows.clone() {
