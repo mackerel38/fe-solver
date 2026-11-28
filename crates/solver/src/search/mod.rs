@@ -202,7 +202,7 @@ impl Searcher {
             }
             // f が式 T の値で 0 になる事実があれば、零点の補題（f(t) = 0 ⇒ t = 0 か、f(k) = 0 となる k ≠ 0 があるか）を
             // 閉じた選言の場合分けより先に試す（否定側は f(k·x) = 0 から x := x/k で閉じることが多い）
-            if depth <= 5 && st.inj.is_none() && st.zinj.is_none() && !st.tried.contains("zinj") && self.has_zero_image(st) {
+            if depth <= 5 && st.inj.is_none() && st.zinj.is_none() && !st.tried.contains("zinj") && std::env::var("FE_NO_ZINJ").is_err() && self.has_zero_image(st) {
                 if self.try_zero_injectivity(st, depth)? {
                     return Ok(());
                 }
@@ -228,7 +228,7 @@ impl Searcher {
             if round == 1 && depth < self.max_depth && self.zero_split(st, depth)? {
                 return Ok(());
             }
-            if round == 2 && depth <= 4 && self.identity_split(st, depth)? {
+            if round == 2 && depth <= 4 && std::env::var("FE_NO_IDSPLIT").is_err() && self.identity_split(st, depth)? {
                 return Ok(());
             }
             if round == 2 && depth <= 4 && std::env::var("FE_NO_INJ").is_err() && self.try_injectivity(st, depth)? {
@@ -246,10 +246,10 @@ impl Searcher {
                     return Ok(());
                 }
             }
-            if round == 2 && depth <= 5 && st.inj.is_none() && self.try_zero_injectivity(st, depth)? {
+            if round == 2 && depth <= 5 && st.inj.is_none() && std::env::var("FE_NO_ZINJ").is_err() && self.try_zero_injectivity(st, depth)? {
                 return Ok(());
             }
-            if round >= 4 && depth <= 3 && self.reduce_depth == 0 && self.solution_rule(st).is_none() && self.try_reduction(st, depth)? {
+            if round >= 4 && depth <= 3 && self.reduce_depth == 0 && self.solution_rule(st).is_none() && std::env::var("FE_NO_REDUCE").is_err() && self.try_reduction(st, depth)? {
                 return Ok(());
             }
             if st.zinj.is_some() {

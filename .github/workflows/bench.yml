@@ -25,6 +25,10 @@ on:
         description: "探索幅の上限（空なら既定の 16）"
         required: false
         default: ""
+      toggles:
+        description: "実験用: 1 にする環境変数の名前（FE_NO_SPEC など、カンマ区切り。空なら何もしない）"
+        required: false
+        default: ""
       schedule:
         description: "探索幅と時間の割合の予定（例 0.5:0.25,1:0.35,2:1。空なら既定）"
         required: false
@@ -98,15 +102,19 @@ jobs:
         env:
           FE_MAX_WIDTH: ${{ inputs.max_width }}
           FE_SCHEDULE: ${{ inputs.schedule }}
-        run: >
-          python3 scripts/bench.py --no-build --no-tests --save-proofs
-          --sets "${{ inputs.sets }}"
-          --ids "${{ inputs.ids }}"
-          --timeout "${{ inputs.eval_timeout }}"
-          --challenge-timeout "${{ inputs.challenge_timeout }}"
-          --shard "${{ matrix.shard }}/20"
-          --stop-after-min 290
-          --out out
+          FE_TOGGLES: ${{ inputs.toggles }}
+        run: |
+          for t in ${FE_TOGGLES//,/ }; do
+            if [[ "$t" =~ ^FE_[A-Z0-9_]+$ ]]; then export "$t=1"; echo "切り替え: $t=1"; else echo "不正な名前: $t"; exit 1; fi
+          done
+          python3 scripts/bench.py --no-build --no-tests --save-proofs \
+            --sets "${{ inputs.sets }}" \
+            --ids "${{ inputs.ids }}" \
+            --timeout "${{ inputs.eval_timeout }}" \
+            --challenge-timeout "${{ inputs.challenge_timeout }}" \
+            --shard "${{ matrix.shard }}/20" \
+            --stop-after-min 290 \
+            --out out
       - uses: actions/upload-artifact@v7
         if: always()
         with:
