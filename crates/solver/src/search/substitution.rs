@@ -228,6 +228,8 @@ impl Searcher {
                         }
                     }
                 }
+                // 小さい T から（規則の一覧の順だと古い規則ばかりが選ばれる）
+                ts.sort_by_key(|t| poly_size(t));
                 ts.truncate(self.scaled(3));
                 let pg = self.e.poly0(g);
                 for t in ts {
@@ -391,11 +393,27 @@ impl Searcher {
                     }
                 }
             }
-            ts.truncate(self.scaled(3));
+            // 小さい T から（規則の一覧の順だと古い規則ばかりが選ばれる）
+            ts.sort_by_key(|t| poly_size(t));
+            ts.truncate(self.scaled(4));
             if !ts.is_empty() {
                 let fx = x();
-                let mut cands: Vec<Fact> = ones.iter().copied().filter(|&f| f_atoms_with_vars(&self.e.poly0(f)).iter().any(|u| *u == fx)).collect();
-                cands.truncate(self.scaled(6));
+                // f(x) を含む 1 変数の事実。f(x) が別の f の引数の中にあるもの（f(f(x) + c) など。x := T(x) の後に内側が
+                // 書き換わって新しい事実になる）を先に、同じなら小さい順に
+                let nested = |p: &Poly| -> bool {
+                    p.top_atoms().iter().any(|a| matches!(a, Atom::F(u) if f_atoms_with_vars(u).iter().any(|w| *w == x())))
+                };
+                let mut cands: Vec<Fact> = st
+                    .units
+                    .iter()
+                    .copied()
+                    .filter(|&f| self.e.nvars(f) == 1 && f_atoms_with_vars(&self.e.poly0(f)).iter().any(|u| *u == fx))
+                    .collect();
+                cands.sort_by_key(|&f| {
+                    let p = self.e.poly0(f);
+                    (!nested(&p), poly_size(&p))
+                });
+                cands.truncate(self.scaled(16));
                 for f in cands {
                     for t in &ts {
                         if self.closed(st) {
