@@ -53,12 +53,25 @@ pub struct CondRule {
 }
 
 /// 枝ごとの知識
+/// パターンつきのべきの規則 f(A(t))^k → R(t)（1 変数の事実 ∀x. c·f(A(x))^k + … = 0 から。R の原子は f(A(x)) より小さい）
+#[derive(Clone)]
+pub struct PatPow {
+    pub fact: Fact,
+    /// 照合用に変数を移した f(A(x))
+    pub pat: Atom,
+    pub k: u32,
+    /// R(x)
+    pub rhs: Poly,
+}
+
 #[derive(Clone)]
 pub struct BState {
     pub b: BranchId,
     pub rules: Vec<RwRule>,
     /// 閉じた単項式の規則 m → rhs（a^k → a の次数 < k の式、f(j)·inv(f(j)) → 1 など）
     pub pow_rules: Vec<(Fact, fe_kernel::Mono, Poly)>,
+    /// パターンつきのべきの規則（f(x)² = x² から f(t)² → t² など）
+    pub pat_pows: Vec<PatPow>,
     /// 閉じた ≠ 0 の事実
     pub nes: Vec<Fact>,
     /// 逆数のわかっている閉じた式 (u, inv(u))
@@ -99,6 +112,7 @@ impl BState {
             b,
             rules: vec![],
             pow_rules: vec![],
+            pat_pows: vec![],
             nes: vec![],
             invs: vec![],
             inj: None,
@@ -532,6 +546,48 @@ impl Engine {
                 break;
             }
         }
+        // パターンつきのべきの規則 f(A(t))^k → R(t)（例化した事実で書き換える。代入が n 個の変数に収まるときだけ）
+        if !st.pat_pows.is_empty() {
+            for _ in 0..4 {
+                let mut changed = false;
+                for pr in st.pat_pows.clone() {
+                    let mut hit: Option<(Atom, Vec<Poly>)> = None;
+                    'find: for (m, _) in cur.terms() {
+                        for (a, e) in m.factors() {
+                            if *e >= pr.k && matches!(a, Atom::F(_)) {
+                                if let Some(s) = match_atom_shifted(&pr.pat, 1, a) {
+                                    hit = Some((a.clone(), s));
+                                    break 'find;
+                                }
+                            }
+                        }
+                    }
+                    let Some((a, sub)) = hit else { continue };
+                    if sub.iter().any(|q| q.vars().iter().any(|&v| v >= _n)) {
+                        continue;
+                    }
+                    let rhs = pr.rhs.subst_vars(&sub);
+                    if !all_atoms_less(&rhs, &a) {
+                        continue;
+                    }
+                    let m = Poly::from_atom(a.clone()).pow(pr.k).terms()[0].0.clone();
+                    let (cur2, q) = reduce_mono(&cur, &m, &rhs);
+                    if q.is_zero() {
+                        continue;
+                    }
+                    let inst = self.k.instantiate(st.b, pr.fact, sub, _n)?;
+                    let stored = self.poly0(inst);
+                    let target = Poly::mono(m, Q::one()).sub(&rhs);
+                    let lam = lead_ratio(&stored, &target).ok_or("パターンつきのべき規則の保存形")?;
+                    items.push((q.scale(&(Q::one() / lam)), inst, 0));
+                    cur = cur2;
+                    changed = true;
+                }
+                if !changed {
+                    break;
+                }
+            }
+        }
         Ok((cur, items))
     }
 
@@ -773,6 +829,12 @@ impl Engine {
                 st.pow_rules.push((f, m, rhs));
                 st.cache.clear();
                 self.reduce_all(st)?;
+            } else if let Some((a, k, rhs)) = extract_pattern_power_rule(self.clause(f)) {
+                if std::env::var("FE_NO_PATPOW").is_err() {
+                    st.pat_pows.push(PatPow { fact: f, pat: shift_atom(&a, 1), k, rhs });
+                    st.cache.clear();
+                    self.reduce_all(st)?;
+                }
             }
         } else {
             if c.nvars() == 0 && c.lits().len() == 1 && c.lits()[0].rel() == Rel::Ne {
@@ -1094,7 +1156,7 @@ impl Engine {
         let units = st.units.clone();
         for u in units {
             self.check_time()?;
-            if st.pow_rules.iter().any(|p| p.0 == u) {
+            if st.pow_rules.iter().any(|p| p.0 == u) || st.pat_pows.iter().any(|p| p.fact == u) {
                 continue;
             }
             let saved = st.rules.clone();
@@ -1193,6 +1255,31 @@ pub fn extract_power_rule(c: &Clause) -> Option<(fe_kernel::Mono, Poly)> {
     let rhs = rest.scale(&(-Q::one() / lc));
     let m = Poly::from_atom(a).pow(k).terms()[0].0.clone();
     Some((m, rhs))
+}
+
+/// 1 変数の単位等式 c·f(A(x))^k + rest = 0（k ≥ 2、c は定数、rest の原子は f(A(x)) より小さい）から
+/// パターンつきのべきの規則 (f(A(x)), k, −rest/c) を作る
+pub fn extract_pattern_power_rule(c: &Clause) -> Option<(Atom, u32, Poly)> {
+    if c.nvars() != 1 || c.lits().len() != 1 || c.lits()[0].rel() != Rel::Eq {
+        return None;
+    }
+    let p = c.lits()[0].poly();
+    let a = crate::order::max_atom(p)?;
+    if !matches!(&a, Atom::F(u) if u.has_var()) {
+        return None;
+    }
+    let cs = crate::polyutil::coeffs_in(p, &a);
+    let k = *cs.keys().next_back()?;
+    if k < 2 {
+        return None;
+    }
+    let lc = cs.get(&k)?.as_const()?;
+    let rest = p.sub(&Poly::from_atom(a.clone()).pow(k).scale(&lc));
+    let rhs = rest.scale(&(-Q::one() / lc));
+    if !all_atoms_less(&rhs, &a) {
+        return None;
+    }
+    Some((a, k, rhs))
 }
 
 /// p の中で単項式 m で割り切れる項を m → rhs で置き換える。p − p' = q·(m − rhs)

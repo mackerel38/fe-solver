@@ -438,6 +438,78 @@ impl Searcher {
             .filter(|r| r.nvars <= 1 && matches!(&r.lhs, Atom::F(a) if poly_size(a) <= 24) && poly_size(&r.rhs) <= 24)
             .cloned()
             .collect();
+        // 規則の根での例: 1 変数の規則 f(A(x)) → f(B(x)) + p(x)（p は f を含まない x の多項式）で、p の有理根 x₀ では
+        // f(A(x₀)) = f(B(x₀))。この例は規則に吸収されて事実としては残らない（加えると 0 = 0 に消える）ので、例化した事実を
+        // 前提としてだけ使い、同じように当てはめる（例: f(f(x)²) → f(0) + x² の x₀ = 0 で f(f(0)²) = f(0)。FE-0355 型）
+        let mut pts = 0;
+        for r in rules.iter().filter(|r| r.nvars == 1) {
+            if pts >= self.scaled(8) || st.cinj_pairs >= self.scaled(16) || self.closed(st) {
+                break;
+            }
+            let Atom::F(a) = &r.lhs else { continue };
+            let mut fb: Option<Poly> = None;
+            let mut rest = Poly::zero();
+            let mut ok = true;
+            for (m, c) in r.rhs.terms() {
+                if !m.factors().iter().any(|(at, _)| matches!(at, Atom::F(_))) {
+                    if m.factors().iter().any(|(at, _)| *at != Atom::Var(0)) {
+                        ok = false;
+                    }
+                    rest = rest.add(&Poly::mono(m.clone(), c.clone()));
+                } else if fb.is_none() && c.is_one() && m.factors().len() == 1 && m.factors()[0].1 == 1 {
+                    if let Atom::F(bp) = &m.factors()[0].0 {
+                        fb = Some((**bp).clone());
+                    }
+                } else {
+                    ok = false;
+                }
+            }
+            let (Some(bp), true) = (fb, ok) else { continue };
+            if rest.is_zero() {
+                continue;
+            }
+            let cmap = crate::polyutil::coeffs_in(&rest, &Atom::Var(0));
+            let deg = cmap.keys().copied().max().unwrap_or(0) as usize;
+            let mut cs: Vec<Q> = vec![Q::zero(); deg + 1];
+            let mut num = true;
+            for (e, c) in &cmap {
+                match c.as_const() {
+                    Some(q) => cs[*e as usize] = q,
+                    None => num = false,
+                }
+            }
+            if !num {
+                continue;
+            }
+            for x0 in crate::polyutil::rational_roots(&cs).into_iter().take(2) {
+                let key = format!("cinjpt|{:?}|{}", r.fact, x0);
+                if !st.tried.insert(key) {
+                    continue;
+                }
+                let pt = [Poly::constant(x0.clone())];
+                let (s1, s2) = (a.subst_vars(&pt), bp.subst_vars(&pt));
+                if s1 == s2 {
+                    continue;
+                }
+                let inst = self.e.k.instantiate(st.b, r.fact, pt.to_vec(), 0)?;
+                // 例が f(s₁) − f(s₂) の定数倍であること
+                let p = self.e.poly0(inst);
+                let fa = |t: &Poly| Mono::atom(Atom::F(std::rc::Rc::new(t.clone())));
+                let ok2 = p.terms().len() == 2
+                    && p.terms().iter().any(|(m, _)| *m == fa(&s1))
+                    && p.terms().iter().any(|(m, _)| *m == fa(&s2))
+                    && p.terms()[0].1 == -p.terms()[1].1.clone();
+                if !ok2 {
+                    continue;
+                }
+                pts += 1;
+                st.cinj_pairs += 1;
+                self.bump("cinj_rule_point");
+                if self.cinj_on_pair(st, inst, &s1, &s2, 0)? {
+                    return Ok(());
+                }
+            }
+        }
         // 右辺が同じ組を、左辺と右辺の大きさの和が小さい順に試す（役に立つ組は小さいことが多い）
         let mut cand: Vec<(u32, usize, usize)> = Vec::new();
         for i in 0..rules.len() {
