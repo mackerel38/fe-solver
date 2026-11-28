@@ -132,6 +132,9 @@ fn real_main() -> i32 {
                 if out.add_found.is_none() {
                     found.extend(out.arb_found.iter().map(|f| json_str(&fe_render::fmt_arb(f))));
                 }
+                if out.add_found.is_none() && out.arb_found.is_none() {
+                    found.extend(out.qs_found.iter().map(|f| json_str(&fe_render::fmt_qsplit(f))));
+                }
                 found.extend(
                     fe_render::display_families(&out.found)
                         .into_iter()

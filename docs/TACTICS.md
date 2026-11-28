@@ -43,6 +43,7 @@
 | 区分的な族（区切り点、各区間で多項式） | verify_piecewise（x, y の符号と引数の区間で場合分け） | mark_piecewise（区間ごとの事実） | piecewise_verification, piecewise_marking |
 | 加法的関数を含む族 f(x) = A(x) + g(x)（A は任意の加法的関数） | verify_additive（A を有理数係数の和で展開して恒等式） | mark_additive（f − g が加法的） | verify_additive_rule, mark_additive_rule |
 | 条件つきの加法的な族（A(A(x)) = x の対合・A(A(x)) = A(x) の射影） | verify_additive_kind（A(A(u)) を u・A(u) に置き換えて展開） | mark_additive_constrained（加法性 + 条件） | additive_kinds_rule |
+| 有理数と無理数で式を変える族 f(x) = g₁(x)（x ∈ ℚ）、g₂(x)（x ∉ ℚ）（g₁ ≠ g₂ は x の有理数係数の多項式）。病的な解の存在の証明（特殊解決）に使う | verify_rational_split（rational.rs。各変数が有理数か無理数かで分け、f の引数が有理数かを「有理数だけの式は有理数」「無理数 u と有理数 r, s で r·u + s は r ≠ 0 なら無理数・r = 0 なら有理数（r が定数でなければ 2 通りに分ける）」「判定済みの引数 w と 0 でない有理数 c で c·w + s は w と同じ」で決め、決まらなければ 2 通りに分けて、各場合で左辺 − 右辺が恒等的に 0 か、r = 0 の 1 次の代入後に 0 か、判定が両立しないことを確かめる。D40） | なし（存在の証明だけ。complete / special と同時に成り立てば内部エラー） | rational_split_rule, tactic_rational_split_family, negative_rational_split_examples_are_genuine, negative_no_rational_split_for_rigid_equations |
 | 任意の区間をもつ族（区分的な族の一部の開区間で、f が任意の値・0 以上 / 以下の任意の値・各点で 2 つの式の一方）。病的な解の存在の証明（特殊解決）に使う | verify_arbitrary（区分的な族と同じ場合分けで、任意の区間での値 f(v) を引数ごとに独立な記号として恒等式を確かめる。0 以上 / 以下の記号の符号は区間の判定に使い、各点の選択は 2 通りに分けて同じ引数の選択をそろえる。D34） | なし（存在の証明だけ。解の集合を決めたと主張しない。complete / special と同時に成り立てば内部エラー） | arbitrary_family_verification, tactic_arbitrary_family, negative_no_arbitrary_family_for_rigid_equations, negative_arbitrary_family_examples_are_genuine |
 
 まだ表現できない解の型（失敗の分析で見つかったもの）:
@@ -50,7 +51,9 @@
 - 区切り点がパラメータの区分的な族（x ≥ c で x、x < c で −x）
 - 半直線上で任意の関数、各点で ±x を自由に選ぶ解: 区切り点 0 で片側が x・−x・0、反対側が任意のものは、任意の区間をもつ族で
   病的な解の存在まで示せるようになった（D34）。解の集合全体（集合 S の閉包条件で決まる族など）はまだ表現できない
-- 乗法的・指数型（ℚ 上のベクトル空間で作る）、2 倍で閉じた集合で決まる解、像が部分群で剰余類の代表元を任意に選ぶ解（FE-0007 型）
+- 乗法的・指数型（ℚ 上のベクトル空間で作る）、2 倍で閉じた集合で決まる解、像が部分群で剰余類の代表元を任意に選ぶ解（FE-0007 型）。
+  2 倍で閉じた集合で決まる解（f(2x) = x + f(x)、f(2f(x)) = x + f(x) など）のうち、ℚ が条件を満たす集合になるものは
+  有理数と無理数で式を変える族で病的な解の存在まで示せるようになった（D40）。解の集合全体はまだ表現できない
 
 ## 3. 探索の手法
 
@@ -147,9 +150,10 @@
 | 条件つき単射性の当てはめ | 「Q(x, y) ∨ f(y) ≠ f(x)」を、変数のない事実・小さい 1 変数の事実 f(s₁) = f(s₂) に代入して導出原理で Q(s₂, s₁)（Instantiate, Resolve）。1 回 scaled(40) 個まで | f(f(x)²) = x·f(x) から「f(a) = f(b) ≠ 0 なら a = b」 | 全体の計測 |
 | 平行移動の補題 | f(x + A(y)) = f(x) + B(y) から「A(y) = A(z) ⇒ B(y) = B(z)」と、x := x − A(−y) の 2 例の差による周期の補題 f(x + A(y) − A(−y)) = f(x) + B(y) − B(−y) | 平行移動型 f(x + T(y)) = f(x) + S(y)（ただし対象の多くはまだ解けない） | 全体の計測 |
 
-### 3.9 病的な解の候補（finalize.rs の find_arb_candidates）
+### 3.9 病的な解の候補（finalize.rs の find_arb_candidates・find_qsplit_candidates）
 | 手法 | 何をするか（使う規則） | 効く類・例 | テスト |
 |---|---|---|---|
+| 有理数と無理数で式を変える族の候補 | 0, x, −x と見つけた解の式（パラメータに 0 と 1 を入れたもの）から異なる 2 つ g₁, g₂ を選び、「有理数で g₁、無理数で g₂」を verify_rational_split で確かめ、最初に通ったものを病的な解の存在（special_exist）として報告する。探索の終わりに毎回試す（解の集合を決めたのに通れば健全性の警告） | f の値と引数が有理数係数の 1 次式でだけ結ばれる型（f(2f(x)) = x + f(x) は有理数で x・無理数で −x/2、f(2x) = x + f(x) は有理数で x + 1・無理数で x、f(x + x f(y)) = f(x) + f(x) f(y) と f(f(x) + f(y)²) = f(x) + y f(y) は有理数で x・無理数で 0） | tactic_rational_split_family |
 | 任意の区間をもつ族の候補 | 区切り点 0 で、片側を g ∈ {x, −x, 0}、反対側を「任意の値・0 以上・0 以下・各点で x か −x・0 か x・0 か −x」とした 36 通りを verify_arbitrary で確かめ、最初に通ったものを病的な解の存在（special_exist）として報告する | f の引数がいつも 0 以上になる型（f(x² + f(y²)) = x² + y²、f(f(x) + f(y)²) = f(x) + f(y)²）、f の値が 2 乗や t·f(t) でだけ現れる型（f(x)² = x²、f(x f(x) + y f(y)) = x f(x) + y f(y)） | tactic_arbitrary_family |
 
 ### 3.7 時間と幅

@@ -925,6 +925,24 @@ pub fn render_arb_exist(_k: &Kernel, fam: &fe_kernel::ArbFamily) -> String {
     )
 }
 
+/// 有理数と無理数で式を変える族の表示
+pub fn fmt_qsplit(fam: &fe_kernel::QsFamily) -> String {
+    let n = Names::plain();
+    format!("f(x) = {}（x が有理数）, {}（x が無理数）", fmt_poly(fam.g_rat(), &n), fmt_poly(fam.g_irr(), &n))
+}
+
+/// 有理数と無理数で式を変える族による病的な解の存在の説明（検証核の検証 verify_rational_split の内容）
+pub fn render_qsplit_exist(_k: &Kernel, fam: &fe_kernel::QsFamily) -> String {
+    format!(
+        "【病的な解の存在】\n{} は解である。\n\
+         各変数が有理数か無理数かで場合を分け、f の各引数が有理数か無理数かを内側から決めて f を展開すると、\
+         どの場合も左辺と右辺が一致する。\n\
+         有理数と無理数で式が異なるので、この関数は多項式や区分的な式では書けない。\n\
+         ほかに解があるかどうかは示せていない。\n",
+        fmt_qsplit(fam)
+    )
+}
+
 /// 区分的な族の表示（区切り点の値が隣の区間の式と一致すればまとめる）
 pub fn fmt_pw(fam: &fe_kernel::PwFamily) -> String {
     let n = Names::plain();

@@ -31,6 +31,11 @@
 //! ```
 //!
 //! ```compile_fail
+//! // 検証済みの「有理数と無理数で式を変える族」も外から作れない
+//! let fam = fe_kernel::QsFamily { kernel: 1, g_rat: fe_kernel::Poly::var(0), g_irr: fe_kernel::Poly::zero() };
+//! ```
+//!
+//! ```compile_fail
 //! // 検証核が保持する事実の一覧は外から書き換えられない
 //! fn tamper(k: &mut fe_kernel::Kernel) { k.facts.clear(); }
 //! ```
@@ -45,8 +50,10 @@ pub mod clause;
 pub mod kernel;
 pub mod piecewise;
 pub mod poly;
+pub mod rational;
 
 pub use clause::{Clause, Lit, Rel};
 pub use kernel::{AddFamily, AddKind, BranchId, Conclusion, Fact, Family, Kernel, Rule, Split, ROOT};
 pub use piecewise::{ArbFamily, ArbPiece, PwFamily};
 pub use poly::{Atom, Mono, Poly, Q};
+pub use rational::QsFamily;

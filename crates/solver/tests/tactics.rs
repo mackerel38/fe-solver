@@ -183,6 +183,32 @@ fn tactic_arbitrary_family() {
     }
 }
 
+/// 有理数と無理数で式を変える族（病的な解の存在、特殊解決）: f の値と引数が有理数係数の 1 次式でだけ結ばれる型。
+/// 「有理数で g₁、無理数で g₂」を検証核で確かめる（データベースにない係数・項のもの）
+#[test]
+fn tactic_rational_split_family() {
+    for (eq, g1, g2) in [
+        ("f(3*f(x)) = 2*x + f(x)", "x", "-2/3*x"),
+        ("f(f(x*y) + 2*f(x*y)) = 2*x*y + f(x*y)", "x", "-2/3*x"),
+        ("f(f(x) + 2*f(y)^2) = f(x) + 2*y*f(y)", "x", "0"),
+        ("f(x + 2*x*f(y)) = f(x) + 2*f(x)*f(y)", "x", "0"),
+    ] {
+        let (l, r, out) = run(eq, 10);
+        assert_eq!(out.status, "special_exist", "{}", eq);
+        assert!(out.error.is_none(), "{}: 内部エラー {:?}", eq, out.error);
+        let fam = out.qs_found.clone().or_else(|| {
+            // 任意の区間をもつ族が先に見つかった場合も、有理数・無理数の族の候補が通ることを確かめる
+            fe_solver::search::find_qsplit_candidates(&Kernel::new(l.clone(), r.clone()).unwrap(), &out.found)
+        });
+        let fam = fam.expect("有理数と無理数で式を変える族がない");
+        let fresh = Kernel::new(l.clone(), r.clone()).unwrap();
+        let (a, b) = (parse_general(&format!("f(x) = {}", g1)).unwrap().1, parse_general(&format!("f(x) = {}", g2)).unwrap().1);
+        assert!(fresh.verify_rational_split(a, b).is_ok(), "{}: 期待した族が検証核で確かめられない", eq);
+        assert!(fresh.verify_rational_split(fam.g_rat().clone(), fam.g_irr().clone()).is_ok(), "{}: 新しい検証核で確かめられない", eq);
+        check_families(eq, &l, &r, &out);
+    }
+}
+
 /// 零点の補題を早めに試し、選言の中の f(s) = 0 にも当てはめる: 引数を等しくする代入で「f(x) = 0 ∨ f(x − f(x)) = 0」を得て、
 /// 「f(t) = 0 ⇒ t = 0」で「x = 0 ∨ x − f(x) = 0」にする。f(x·f(x) + c·xy) = f(x²) + c·f(x)f(y) の型
 #[test]

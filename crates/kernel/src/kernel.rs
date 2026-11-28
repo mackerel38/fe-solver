@@ -1482,6 +1482,13 @@ impl Kernel {
         Ok(crate::piecewise::ArbFamily { kernel: self.id, breaks, pieces })
     }
 
+    /// 有理数と無理数で式を変える族 f(x) = g₁(x)（x が有理数）、g₂(x)（x が無理数）が解であることを確かめる
+    /// （詳細は rational モジュール）。g₁ ≠ g₂ なので、病的な解（多項式や区分的な式で書けない解）の存在の証明に使う。
+    pub fn verify_rational_split(&self, g_rat: Poly, g_irr: Poly) -> R<crate::rational::QsFamily> {
+        crate::rational::verify(&self.lhs, &self.rhs, &g_rat, &g_irr)?;
+        Ok(crate::rational::QsFamily { kernel: self.id, g_rat, g_irr })
+    }
+
     /// 葉 b で、区分的な族の各区間 i について事実 facts[i] が「その区間では f(x) = g_i(x)」を与えるなら、
     /// 葉を「解が確定」とする。facts[i] の節は、f を含む等式リテラル λ(f(t) − h) = 0（t = x、または点の区間では
     /// t = 区切り点）がちょうど 1 つで、他のリテラルは x の 1 次式でその区間全体で偽、h は区間上で g_i と一致すること。

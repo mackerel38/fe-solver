@@ -149,6 +149,57 @@ fn check_arb_numerically(eq_desc: &str, l: &Poly, r: &Poly, fam: &fe_kernel::Arb
     }
 }
 
+/// ℚ(√2) の数 a + b√2（a, b は有理数）。有理数と無理数で式を変える族を、検証核とは独立に無理数の点でも厳密に評価する
+#[derive(Clone, Debug, PartialEq)]
+struct K2(Q, Q);
+
+impl K2 {
+    fn add(&self, o: &K2) -> K2 {
+        K2(&self.0 + &o.0, &self.1 + &o.1)
+    }
+    fn mul(&self, o: &K2) -> K2 {
+        K2(&self.0 * &o.0 + Q::from_integer(2.into()) * &self.1 * &o.1, &self.0 * &o.1 + &self.1 * &o.0)
+    }
+}
+
+fn eval_k2(p: &Poly, xv: &K2, yv: &K2, f: &dyn Fn(&K2) -> K2) -> K2 {
+    use fe_kernel::Atom;
+    let mut s = K2(Q::zero(), Q::zero());
+    for (m, c) in p.terms() {
+        let mut t = K2(c.clone(), Q::zero());
+        for (a, e) in m.factors() {
+            let v = match a {
+                Atom::Var(0) => xv.clone(),
+                Atom::Var(1) => yv.clone(),
+                Atom::F(u) => f(&eval_k2(u, xv, yv, f)),
+                other => panic!("評価できない原子 {:?}", other),
+            };
+            for _ in 0..*e {
+                t = t.mul(&v);
+            }
+        }
+        s = s.add(&t);
+    }
+    s
+}
+
+/// 有理数と無理数で式を変える族が、有理数の点と ℚ(√2) の無理数の点で方程式を厳密に満たすこと（検証核とは独立の確認）
+fn check_qsplit_numerically(eq_desc: &str, l: &Poly, r: &Poly, fam: &fe_kernel::QsFamily) {
+    let g = |p: &Poly, t: &K2| eval_k2(p, t, &K2(Q::zero(), Q::zero()), &|_| K2(Q::zero(), Q::zero()));
+    let f = |t: &K2| if t.1.is_zero() { g(fam.g_rat(), t) } else { g(fam.g_irr(), t) };
+    let pts: Vec<K2> = [(q(0), q(0)), (q(1), q(0)), (q(-1), q(0)), (qf(1, 2), q(0)), (q(-3), q(0)), (q(0), q(1)), (q(0), q(-1)), (q(1), q(1)), (qf(-1, 2), q(1)), (q(3), q(-2)), (q(0), qf(1, 2))]
+        .into_iter()
+        .map(|(a, b)| K2(a, b))
+        .collect();
+    for a in &pts {
+        for b in &pts {
+            let lv = eval_k2(l, a, b, &f);
+            let rv = eval_k2(r, a, b, &f);
+            assert!(lv == rv, "{}: 有理数と無理数で式を変える族が x = {:?}, y = {:?} で方程式を満たさない", eq_desc, a, b);
+        }
+    }
+}
+
 /// 報告した族がすべて（新しい検証核でも）解であること。
 /// 完全解決と主張したなら総当たりの解をすべて含み、しかも「任意の加法的関数が解」ではないこと
 /// （そうなら多項式で書けない病的な解があるので、多項式・区分的な族だけの完全解決は誤り）。
@@ -171,9 +222,23 @@ fn check_sound(eq_desc: &str, l: &Poly, r: &Poly, out: &SolveOutput) {
     if out.status == "special" {
         assert!(out.add_found.is_some(), "{}: 特殊解決なのに加法的な族の検証がない", eq_desc);
     }
+    for f in out.qs_found.iter() {
+        assert!(fresh.verify_rational_split(f.g_rat().clone(), f.g_irr().clone()).is_ok(), "{}: 解でない有理数・無理数の族を報告した", eq_desc);
+        check_qsplit_numerically(eq_desc, l, r, f);
+    }
     if out.status == "special_exist" {
-        // 病的な解の存在は、加法的な族か任意の区間をもつ族（上で新しい検証核と数値で確かめた）による
-        assert!(out.add_found.is_some() || out.arb_found.is_some(), "{}: 特殊解決なのに病的な解の族の検証がない", eq_desc);
+        // 病的な解の存在は、加法的な族・任意の区間をもつ族・有理数と無理数で式を変える族（上で新しい検証核と、
+        // 検証核とは独立の数値で確かめた）による
+        assert!(
+            out.add_found.is_some() || out.arb_found.is_some() || out.qs_found.is_some(),
+            "{}: 特殊解決なのに病的な解の族の検証がない",
+            eq_desc
+        );
+    }
+    // 解の集合を決めた（complete / special）なら、有理数と無理数で式を変える族（多項式・区分的な式・加法的関数 + 多項式の
+    // どれでも書けない解）が解であってはならない
+    if out.status == "complete" || out.status == "special" {
+        assert!(out.qs_found.is_none(), "{}: 解の集合を決めたのに、有理数と無理数で式を変える族も解である", eq_desc);
     }
     if out.status == "special" {
         assert!(!out.add_families.is_empty(), "{}: 特殊解決なのに加法的な族の葉がない", eq_desc);
@@ -392,6 +457,48 @@ fn negative_known_solution_sets_exact() {
 }
 
 /// 任意の区間をもつ族（病的な解の存在）は、解が多項式・加法的な族だけの方程式や、壊した方程式では検証を通らない
+#[test]
+fn negative_rational_split_examples_are_genuine() {
+    // 有理数と無理数で式を変える病的な解をもつ方程式で、報告した族を新しい検証核と ℚ(√2) の数値で確かめる
+    for eq in ["f(2*f(x)) = x + f(x)", "f(3*f(x)) = 2*x + f(x)", "f(x + x*f(y)) = f(x) + f(x)*f(y)", "f(f(x) + f(y)^2) = f(x) + y*f(y)"] {
+        let out = run(eq);
+        assert_eq!(out.status, "special_exist", "{}", eq);
+        let (l, r) = parse_general(eq).unwrap();
+        let k = Kernel::new(l.clone(), r.clone()).unwrap();
+        assert!(out.error.is_none(), "{}: 内部エラー {:?}", eq, out.error);
+        let fam = out.qs_found.clone().or_else(|| fe_solver::search::find_qsplit_candidates(&k, &out.found)).expect("有理数と無理数で式を変える族がない");
+        check_qsplit_numerically(eq, &l, &r, &fam);
+        check_sound(eq, &l, &r, &out);
+    }
+}
+
+#[test]
+fn negative_no_rational_split_for_rigid_equations() {
+    // 解が多項式で決まる（または加法的関数だけの）方程式と、病的な解をもつ方程式を壊したもので、
+    // 有理数と無理数で式を変える族を解としないこと
+    for eq in [
+        "f(x + y) = f(x) + y",
+        "f(x + f(y)) = f(x) + y",
+        "f(x^2 + f(y)) = y + f(x)^2",
+        "f(x*f(y) + x) = x*y + f(x)",
+        "f(x + y) = f(x) + f(y)",
+        "f(x*y) = f(x)*f(y)",
+        "f(x^2) = f(x)^2",
+        // 壊した方程式
+        "f(2*f(x)) = x + 2*f(x)",
+        "f(2*f(x*y)) = x*y + f(x*y) + 1",
+        "f(x + x*f(y)) = f(x) + f(x)*f(y) + x",
+        "f(f(x) + f(y)^2) = 2*f(x) + y*f(y)",
+    ] {
+        let (l, r) = parse_general(eq).unwrap();
+        let k = Kernel::new(l.clone(), r.clone()).unwrap();
+        let out = solve(l.clone(), r.clone(), T).unwrap();
+        assert!(fe_solver::search::find_qsplit_candidates(&k, &out.found).is_none(), "{}: 有理数と無理数で式を変える族を解としてしまう", eq);
+        assert!(out.qs_found.is_none(), "{}: 有理数と無理数で式を変える族を報告した", eq);
+        check_sound(eq, &l, &r, &out);
+    }
+}
+
 #[test]
 fn negative_no_arbitrary_family_for_rigid_equations() {
     for eq in [

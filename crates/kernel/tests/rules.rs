@@ -522,6 +522,47 @@ fn arbitrary_family_verification() {
     assert!(k.verify_arbitrary(vec![q(0)], vec![Choice(x(), x()), c(0).into_fixed(), Fixed(x())]).is_err());
 }
 
+#[test]
+fn rational_split_rule() {
+    let sc = |p: Poly, a: i64, b: i64| p.scale(&qf(a, b));
+    // f(2f(x)) = x + f(x): 有理数で x、無理数で −x/2（無理数 t では 2f(t) = −t も無理数）
+    let k = Kernel::new(f(f(x()).scale(&q(2))), x().add(&f(x()))).unwrap();
+    assert!(k.verify_rational_split(x(), sc(x(), -1, 2)).is_ok());
+    assert!(k.verify_rational_split(sc(x(), -1, 2), x()).is_ok());
+    // 無理数で −x は解でない
+    assert!(k.verify_rational_split(x(), x().neg()).is_err());
+    // データベースにない同じ型: f(3f(x)) = 2x + f(x) は有理数で x、無理数で −2x/3
+    let k1 = Kernel::new(f(f(x()).scale(&q(3))), x().scale(&q(2)).add(&f(x()))).unwrap();
+    assert!(k1.verify_rational_split(x(), sc(x(), -2, 3)).is_ok());
+    assert!(k1.verify_rational_split(x(), sc(x(), -1, 2)).is_err());
+    // 引数が xy の形（x, y が無理数でも xy は有理数になりうる。xy と 2xy は同時に有理数か無理数かで連動する）:
+    // f(f(xy) + f(xy)) = xy + f(xy)
+    let xy = || x().mul(&y());
+    let k2 = Kernel::new(f(f(xy()).scale(&q(2))), xy().add(&f(xy()))).unwrap();
+    assert!(k2.verify_rational_split(x(), sc(x(), -1, 2)).is_ok());
+    assert!(k2.verify_rational_split(x(), x().neg()).is_err());
+    // 2 変数: f(f(x) + 2f(y)²) = f(x) + 2y f(y) は、有理数で x、無理数で 0
+    let k3 = Kernel::new(f(f(x()).add(&f(y()).pow(2).scale(&q(2)))), f(x()).add(&y().mul(&f(y())).scale(&q(2)))).unwrap();
+    assert!(k3.verify_rational_split(x(), c(0)).is_ok());
+    assert!(k3.verify_rational_split(c(0), x()).is_err());
+    // 引数が r·u + s の形で r が 0 になりうる: f(x + x f(y)) = f(x) + f(x) f(y)（x が無理数、y = −1 のとき引数は 0）
+    let k4 = Kernel::new(f(x().add(&x().mul(&f(y())))), f(x()).add(&f(x()).mul(&f(y())))).unwrap();
+    assert!(k4.verify_rational_split(x(), c(0)).is_ok());
+    // 解でないもの: 加法性 f(x + y) = f(x) + f(y)、f(x + y) = f(x) + y（解は x + c だけ）
+    let k5 = Kernel::new(f(x().add(&y())), f(x()).add(&f(y()))).unwrap();
+    for (g1, g2) in [(x(), c(0)), (c(0), x()), (x(), x().scale(&q(2))), (x().add(&c(1)), x())] {
+        assert!(k5.verify_rational_split(g1, g2).is_err());
+    }
+    let k6 = Kernel::new(f(x().add(&y())), f(x()).add(&y())).unwrap();
+    for (g1, g2) in [(x(), x().add(&c(1))), (x().add(&c(1)), x()), (x(), c(0))] {
+        assert!(k6.verify_rational_split(g1, g2).is_err());
+    }
+    // 形式の誤り: 同じ式、x 以外の変数、f を含む式
+    assert!(k.verify_rational_split(x(), x()).is_err());
+    assert!(k.verify_rational_split(x(), y()).is_err());
+    assert!(k.verify_rational_split(x(), f(x())).is_err());
+}
+
 trait IntoFixed {
     fn into_fixed(self) -> fe_kernel::ArbPiece;
 }

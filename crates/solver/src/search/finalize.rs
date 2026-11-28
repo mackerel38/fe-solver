@@ -385,6 +385,37 @@ pub fn find_arb_candidates(k: &Kernel) -> Option<fe_kernel::ArbFamily> {
     None
 }
 
+/// 有理数と無理数で式を変える族の候補（病的な解の存在）: 0, x, −x と見つけた解の式（パラメータに 0 と 1 を入れたもの）から
+/// 異なる 2 つ g₁, g₂ を選び、「有理数で g₁、無理数で g₂」を検証核の verify_rational_split で確かめ、最初に通ったものを返す。
+/// 効く類: f の値と引数が有理数係数の 1 次式でだけ結ばれ、有理数か無理数かが引数の間で保たれる型
+/// （f(2f(x)) = x + f(x) は有理数で x・無理数で −x/2、f(x + x f(y)) = f(x) + f(x) f(y) は有理数で x・無理数で 0 など）。
+pub fn find_qsplit_candidates(k: &Kernel, found: &[fe_kernel::Family]) -> Option<fe_kernel::QsFamily> {
+    let mut polys: Vec<Poly> = vec![Poly::zero(), x(), x().neg()];
+    for fam in found {
+        for val in [0i64, 1] {
+            let mut s = vec![x(), Poly::var(1)];
+            s.extend(fam.params().iter().map(|_| Poly::int(val)));
+            let g = fam.template().subst_vars(&s);
+            if !g.vars().iter().any(|&v| v != 0) && !g.has_f() && !polys.contains(&g) {
+                polys.push(g);
+            }
+        }
+        if polys.len() >= 10 {
+            break;
+        }
+    }
+    for g1 in &polys {
+        for g2 in &polys {
+            if g1 != g2 {
+                if let Ok(fam) = k.verify_rational_split(g1.clone(), g2.clone()) {
+                    return Some(fam);
+                }
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn vander(d: u32) -> Vec<Vec<Q>> {
     (0..=d).map(|i| (0..=d).map(|a| Q::from_integer((i as i64).pow(a).into())).collect()).collect::<Vec<_>>()
 }
