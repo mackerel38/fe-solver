@@ -422,7 +422,7 @@ impl Searcher {
     }
 
     /// 見つけた解に導かれる補題の推測: 性質の一覧（f(0) = 0、奇関数、偶関数、f(f(x)) = x、f(f(x)) = f(x)、
-    /// f(1) = c、f(x + 1) = f(x) + c）のうち、この枝と矛盾しない解の候補すべてが満たすものを、否定を閉じて補題にする。
+    /// f(x)² = x²、f(x²) = x·f(x)、f(1) = c、f(x + 1) = f(x) + c）のうち、この枝と矛盾しない解の候補すべてが満たすものを、否定を閉じて補題にする。
     /// 健全性は検証核による（候補の選び方は推測でよい）。
     pub(crate) fn speculate_lemmas(&mut self, st: &mut BState, depth: u32, round: usize) -> Res<bool> {
         if st.in_trial {
@@ -442,6 +442,10 @@ impl Searcher {
         let tail: Vec<(&str, u32, Poly)> = vec![
             ("even", 1, Poly::f(x().neg()).sub(&Poly::f(x()))),
             ("idem", 1, Poly::f(Poly::f(x())).sub(&Poly::f(x()))),
+            // 解の候補が x と −x（や |x|）のとき: 各点で ±x
+            ("sq", 1, Poly::f(x()).pow(2).sub(&x().pow(2))),
+            // 解の候補がすべて c·x の形のとき: f(x²) = x·f(x)
+            ("sqarg", 1, Poly::f(x().pow(2)).sub(&x().mul(&Poly::f(x())))),
         ];
         // f(1) の値・f(x + 1) − f(x) が解の候補で共通の有理数なら、それも候補にする
         let v1: Vec<Poly> = sols.iter().map(|g| g.subst_vars(&[one.clone()])).collect();
