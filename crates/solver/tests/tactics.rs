@@ -411,6 +411,22 @@ fn tactic_cond_injectivity_fixpoint() {
     check_families(eq, &l, &r, &out);
 }
 
+/// 大きくとる代入（「x を十分大きくとる」議論）: x ≥ 0 で f(x) = x がわかったあと、x := 1 + (2y f(y))² を代入すると、
+/// x も f の引数 2x f(x) + 2y f(y) も平方和で正とわかり、条件つきの規則で書き換えて y f(y) = y² になる。
+/// 平方和の分解は w = y f(y) の 4 次式（単項式を 1 つの原子とみなし、最高次の平方の項を外して平方完成）。
+/// FE-0336 型 f(x f(x) + y f(y)) = x² + f(y²) の係数を変えた式
+#[test]
+fn tactic_large_substitution() {
+    let eq = "f(2*x*f(x) + 2*y*f(y)) = 2*x^2 + 2*f(y^2)";
+    let (l, r, out) = run(eq, 30);
+    assert_eq!(out.status, "complete", "{}", eq);
+    let got: Vec<String> = out.families.iter().map(|f| f.template().to_string()).collect();
+    assert_eq!(got, vec!["x".to_string()], "{}: 解の集合 {:?}", eq, got);
+    let used = out.stats.iter().any(|(k, v)| k == "large_subst" && *v > 0);
+    assert!(used, "{}: 大きくとる代入を使っていない", eq);
+    check_families(eq, &l, &r, &out);
+}
+
 /// パターンつきのべきの規則: 1 変数の事実 f(x)² = x² を、f の引数の中の f(t)² にも当てて t² に書き換える
 /// （f(f(y)² + 3x f(x)) → f(y² + 3x f(x)) など）。各点で ±x の場合分けのあと、f(a) = −a の枝で y := 2a などの代入がすぐ矛盾になる。
 /// 規則の根での例 f(f(x)²) → f(0) + x² の x = 0 で f(f(0)²) = f(0) を作り、条件つきの単射性で f(0) = 0 を出す。問題集にない係数の式

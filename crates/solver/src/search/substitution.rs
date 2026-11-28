@@ -1162,6 +1162,74 @@ impl Searcher {
     /// 条件の外せる点での例化: 2 つ以上のリテラルをもつ事実で、1 つの変数 w だけを含む等式リテラル p(w) = 0 について、
     /// この枝の閉じた ≠ の事実 u ≠ 0 に現れる定数 K で p(K) が u の定数倍になるなら、w := K と例化する
     /// （追加時に既知の ≠ の事実でそのリテラルが外れる）。例: 「f(x) = 0 ∨ f(y) = y + f(x) − x」と f(a) ≠ 0 から f(y) = y + f(a) − a。
+    /// 大きくとる代入（「x を十分大きくとる」議論）: 条件つきの規則（x ≥ 0 で f(x) = g(x) など）があるとき、2 変数の単位等式の
+    /// f の引数 A が変数 v を含めば、v := 1 + R²（R は A で v = 0 とした残り。もう一方の変数の式）を代入した 1 変数の事実を作る。
+    /// v は正で、A の v の部分が R を上回ることが多いので、条件の否定を平方和で示せて条件つきの規則で書き換えられる（Instantiate。
+    /// 書き換えは PosComb・Resolve を通る）。効く類: 半直線で解が決まったあと残りの半直線に広げる型。
+    /// 例: f(x f(x) + y f(y)) = x² + f(y²) で x ≥ 0 なら f(x) = x のとき、x := 1 + (y f(y))² で
+    /// f((1 + w²)² + w) = (1 + w²)² + w（w = y f(y)）となり y f(y) = y²
+    pub(crate) fn large_substitution(&mut self, st: &mut BState) -> Res<()> {
+        if st.cond_rules.is_empty() || std::env::var("FE_NO_LARGE").is_ok() {
+            return Ok(());
+        }
+        let mut facts: Vec<Fact> = st.units.iter().copied().filter(|f| self.e.nvars(*f) == 2).collect();
+        facts.sort_by_key(|f| poly_size(&self.e.poly0(*f)));
+        facts.truncate(self.scaled(4));
+        let mut made = 0;
+        for f in facts {
+            let p = self.e.poly0(f);
+            let mut args: Vec<Poly> = Vec::new();
+            p.visit_atoms(&mut |a| {
+                if let Atom::F(u) = a {
+                    if !args.contains(u) {
+                        args.push((**u).clone());
+                    }
+                }
+            });
+            for v in 0..2u32 {
+                let mut rs: Vec<Poly> = Vec::new();
+                for a in &args {
+                    if !a.vars().contains(&v) || *a == Poly::var(v) {
+                        continue;
+                    }
+                    let mut s0 = vec![Poly::var(0), Poly::var(1)];
+                    s0[v as usize] = Poly::zero();
+                    let r = a.subst_vars(&s0);
+                    if r.as_const().is_some() || rs.contains(&r) {
+                        continue;
+                    }
+                    rs.push(r);
+                }
+                rs.sort_by_key(poly_size);
+                for r in rs.into_iter().take(2) {
+                    if made >= self.scaled(4) || self.closed(st) {
+                        return Ok(());
+                    }
+                    let key = format!("large|{:?}|{}|{:?}", f, v, r);
+                    if !st.tried.insert(key) {
+                        continue;
+                    }
+                    // 残る変数を Var(0) にする
+                    let u = 1 - v as usize;
+                    let mut ren = vec![Poly::var(0), Poly::var(1)];
+                    ren[u] = Poly::var(0);
+                    let big = Poly::one().add(&r.subst_vars(&ren).pow(2));
+                    if poly_size(&big) > 40 {
+                        continue;
+                    }
+                    let mut sub = vec![Poly::zero(), Poly::zero()];
+                    sub[v as usize] = big;
+                    sub[u] = Poly::var(0);
+                    let inst = self.e.k.instantiate(st.b, f, sub, 1)?;
+                    self.bump("large_subst");
+                    self.e.add_fact(st, inst)?;
+                    made += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn discharge_conditions(&mut self, st: &mut BState) -> Res<()> {
         if st.nes.is_empty() {
             return Ok(());

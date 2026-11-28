@@ -155,6 +155,11 @@ impl Searcher {
             if self.closed(st) {
                 return Ok(());
             }
+            // 大きくとる代入（条件つきの規則があるときだけ）
+            self.large_substitution(st)?;
+            if self.closed(st) {
+                return Ok(());
+            }
             self.affine_inverse_ones(st)?;
             if self.closed(st) {
                 return Ok(());

@@ -71,7 +71,87 @@ fn sos_rec(p: &Poly, depth: u32) -> Option<(Vec<(Q, Poly)>, Q)> {
             return Some((sq, k));
         }
     }
+    // 3. 定数でない項がすべてある単項式 M（原子 2 つ以上の積）のべきなら、M を 1 つの原子 z とみなして分解し、z を M に戻す
+    //    （例: (1 + y²f(y)²)² + y f(y) は w = y f(y) の 4 次式）
+    if let Some(base) = common_base(p) {
+        let z = Atom::Const(u32::MAX - 7);
+        let mut pz = Poly::zero();
+        for (m, c) in p.terms() {
+            let k = if m.is_one() { 0 } else { power_of(m, &base)? };
+            pz = pz.add(&Poly::from_atom(z.clone()).pow(k).scale(c));
+        }
+        if let Some((sq, k)) = sos_rec(&pz, depth + 1) {
+            let mp = Poly::mono(base, Q::one());
+            let back = sq
+                .into_iter()
+                .map(|(d, t)| (d, t.transform(&mut |a| if a == z { mp.clone() } else { Poly::from_atom(a) })))
+                .collect();
+            return Some((back, k));
+        }
+    }
+    // 4. 次数最大の項が「正の係数 × 平方の単項式」なら、その項を平方として外し、残りを分解する（例: w⁴ + 2w² + w + 1）
+    let maxd = p.terms().iter().map(|(m, _)| m.degree()).max()?;
+    if let Some((m, c)) = p.terms().iter().find(|(m, c)| m.degree() == maxd && c.is_positive() && m.factors().iter().all(|(_, e)| e % 2 == 0)) {
+        let rest = p.sub(&Poly::mono(m.clone(), c.clone()));
+        if let Some((mut sq, k)) = sos_rec(&rest, depth + 1) {
+            let mut r = Mono::one();
+            for (a, e) in m.factors() {
+                for _ in 0..(e / 2) {
+                    r = r.mul(&Mono::atom(a.clone()));
+                }
+            }
+            sq.push((c.clone(), Poly::mono(r, Q::one())));
+            return Some((sq, k));
+        }
+    }
     None
+}
+
+/// 定数でない項の単項式がすべて M のべきになる単項式 M（原子 2 つ以上の積で、次数が最小の単項式の指数を最大公約数で割ったもの）
+fn common_base(p: &Poly) -> Option<Mono> {
+    let m0 = p.terms().iter().map(|(m, _)| m).filter(|m| !m.is_one()).min_by_key(|m| m.degree())?;
+    if m0.factors().len() < 2 {
+        return None;
+    }
+    let g = m0.factors().iter().fold(0u32, |g, (_, e)| gcd(g, *e));
+    let mut base = Mono::one();
+    for (a, e) in m0.factors() {
+        for _ in 0..(e / g) {
+            base = base.mul(&Mono::atom(a.clone()));
+        }
+    }
+    if p.terms().iter().all(|(m, _)| m.is_one() || power_of(m, &base).is_some()) {
+        Some(base)
+    } else {
+        None
+    }
+}
+
+/// m = base^k なら k
+fn power_of(m: &Mono, base: &Mono) -> Option<u32> {
+    if m.factors().len() != base.factors().len() {
+        return None;
+    }
+    let mut k: Option<u32> = None;
+    for ((a, e), (b, d)) in m.factors().iter().zip(base.factors()) {
+        if a != b || e % d != 0 {
+            return None;
+        }
+        match k {
+            None => k = Some(e / d),
+            Some(k0) if k0 == e / d => {}
+            _ => return None,
+        }
+    }
+    k
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
 }
 
 /// p の中で変数 v が v² の形でだけ現れる（f の引数の中も含む）なら、v² を v に置き換えた式を返す
@@ -127,6 +207,26 @@ mod tests {
         let (sq, k) = sos(&x.pow(2).add(&Poly::int(1))).unwrap();
         assert_eq!(k, q(1));
         assert_eq!(sq.len(), 1);
+    }
+    #[test]
+    fn sos_monomial_base_and_top_square() {
+        // (1 + y²f(y)²)² + y f(y): w = y f(y) の 4 次式 w⁴ + 2w² + w + 1。分解が恒等式になること
+        let y = Poly::var(1);
+        let w = y.mul(&Poly::f(y.clone()));
+        let p = Poly::one().add(&w.pow(2)).pow(2).add(&w);
+        let (sq, k) = sos(&p).expect("分解できない");
+        let mut back = Poly::constant(k.clone());
+        for (d, s) in &sq {
+            assert!(d.is_positive());
+            back = back.add(&s.pow(2).scale(d));
+        }
+        assert_eq!(back, p);
+        assert!(k.is_positive());
+        // w⁴ − w は負になりうる（w = 1/2）ので分解しない
+        assert!(sos(&w.pow(4).sub(&w)).is_none());
+        // x⁴ + x² + x + 1（1 変数。最高次の x⁴ を外すと x² + x + 1 が平方完成できる）
+        let x = Poly::var(0);
+        assert!(sos(&x.pow(4).add(&x.pow(2)).add(&x).add(&Poly::one())).is_some());
     }
     #[test]
     fn unsquare_basic() {
