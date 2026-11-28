@@ -167,6 +167,25 @@ impl Searcher {
                     vec![y(), x()],
                     vec![fx.clone(), fy.clone()],
                 ];
+                // 積を一方に寄せる代入 P(xy, 1)・P(1, xy): 公理が積 xy を含む（xy の単項式か、引数に xy を含む f）ときだけ
+                // （xy の項は変わらず、f(x)・f(y) が f(xy)・f(1) になる。右辺が同じ事実の比較や単射性と組み合わせる）
+                let xy = x().mul(&y());
+                let ax = self.e.poly0(self.e.k.axiom());
+                let has_xy = {
+                    let mut found = false;
+                    ax.visit_atoms(&mut |a| {
+                        if let Atom::F(u) = a {
+                            if u.terms().iter().any(|(m, _)| m == &xy.terms()[0].0) {
+                                found = true;
+                            }
+                        }
+                    });
+                    found || ax.terms().iter().any(|(m, _)| m.factors().iter().any(|(a, _)| *a == Atom::Var(0)) && m.factors().iter().any(|(a, _)| *a == Atom::Var(1)))
+                };
+                if has_xy {
+                    two.push(vec![xy.clone(), Poly::one()]);
+                    two.push(vec![Poly::one(), xy.clone()]);
+                }
                 // ずらし・倍の代入（P(x, y + 1), P(x + 1, y), P(x, 2y) など）
                 if round >= 2 {
                     let one = Poly::one();

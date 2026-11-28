@@ -134,6 +134,23 @@ impl Searcher {
             }
             let (a, c) = match (lhs, count) {
                 (Some(t), 1) => t,
+                // 2 変数の事実は、右辺に f を含んでもよい: 単独の項として現れる最大の f の原子を左辺にする
+                // （例: f(f(x)f(y) + f(xy)) = xy + f(xy) と P(xy, 1) の f(f(xy)f(1) + f(xy)) = xy + f(xy)）
+                _ if nv == 2 => {
+                    let mut best: Option<(Atom, Q)> = None;
+                    for (m, c) in p.terms() {
+                        if m.factors().len() == 1 && m.factors()[0].1 == 1 {
+                            let a = &m.factors()[0].0;
+                            if matches!(a, Atom::F(_)) && a.has_var() && best.as_ref().map_or(true, |(b, _)| atom_cmp(a, b) == std::cmp::Ordering::Greater) {
+                                best = Some((a.clone(), c.clone()));
+                            }
+                        }
+                    }
+                    match best {
+                        Some(t) => t,
+                        None => continue,
+                    }
+                }
                 _ => continue,
             };
             let r = Poly::from_atom(a.clone()).sub(&p.scale(&(Q::one() / &c)));
