@@ -486,7 +486,8 @@ fn negative_no_rational_split_for_rigid_equations() {
         "f(x^2) = f(x)^2",
         // 壊した方程式
         "f(2*f(x)) = x + 2*f(x)",
-        "f(2*f(x*y)) = x*y + f(x*y) + 1",
+        // f(2f(xy)) = xy + f(xy) + 1 は壊れていない（多項式の解 x + 1/2・−x/2 − 1 を有理数・無理数で使い分ける解をもつ）ので使わない
+        "f(2*f(x*y)) = x*y + 2*f(x*y)",
         "f(x + x*f(y)) = f(x) + f(x)*f(y) + x",
         "f(f(x) + f(y)^2) = 2*f(x) + y*f(y)",
     ] {
